@@ -31,7 +31,7 @@ import Alamofire
 ///     )
 /// ])
 ///
-/// let response = try await Request<User>()
+/// let response = try await Call<User>()
 ///     .path("/users/1/avatar")
 ///     .method(.post)
 ///     .upload(multipart: formData)

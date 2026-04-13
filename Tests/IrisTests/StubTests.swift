@@ -27,7 +27,7 @@ final class StubTests: XCTestCase {
     func testImmediateStubReturnsData() async throws {
         let sampleData = "{\"login\": \"testuser\", \"id\": 123}".data(using: .utf8)!
         
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/testuser")
             .stub(sampleData)
             .fire()
@@ -40,7 +40,7 @@ final class StubTests: XCTestCase {
     func testStubFromEncodable() async throws {
         let user = GitHubUser(login: "stubuser", id: 456)
         
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/stubuser")
             .stub(user)
             .fire()
@@ -50,7 +50,7 @@ final class StubTests: XCTestCase {
     }
     
     func testStubFromString() async throws {
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/stringuser")
             .stub("{\"login\": \"stringuser\", \"id\": 789}")
             .fire()
@@ -65,7 +65,7 @@ final class StubTests: XCTestCase {
         let delay: TimeInterval = 0.5
         let startTime = Date()
         
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/delayed")
             .stub(GitHubUser(login: "delayed", id: 1))
             .stub(behavior: .delayed(delay))
@@ -87,7 +87,7 @@ final class StubTests: XCTestCase {
         
         let startTime = Date()
         
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/globaldelayed")
             .stub(GitHubUser(login: "globaldelayed", id: 2))
             .fire()
@@ -111,7 +111,7 @@ final class StubTests: XCTestCase {
         // Local: immediate
         let startTime = Date()
         
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/override")
             .stub(GitHubUser(login: "override", id: 3))
             .stub(behavior: .immediate)
@@ -126,7 +126,7 @@ final class StubTests: XCTestCase {
     // MARK: - Fetch Convenience Tests
     
     func testFetchReturnsModel() async throws {
-        let user = try await Request<GitHubUser>()
+        let user = try await Call<GitHubUser>()
             .path("/users/fetchuser")
             .stub(GitHubUser(login: "fetchuser", id: 100))
             .fetch()
@@ -140,7 +140,7 @@ final class StubTests: XCTestCase {
     func testStubResponseHasCorrectProperties() async throws {
         let sampleData = "{\"login\": \"propuser\", \"id\": 200}".data(using: .utf8)!
         
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/propuser")
             .stub(sampleData)
             .fire()
@@ -156,7 +156,7 @@ final class StubTests: XCTestCase {
     // MARK: - Empty Response Tests
     
     func testEmptyResponseStub() async throws {
-        let response = try await Request<Empty>
+        let response = try await Call<Empty>
             .plain()
             .path("/ping")
             .stub(Data())
@@ -178,7 +178,7 @@ final class StubTests: XCTestCase {
         let encoder = JSONEncoder()
         let sampleData = try encoder.encode(users)
         
-        let response = try await Request<[GitHubUser]>()
+        let response = try await Call<[GitHubUser]>()
             .path("/users")
             .stub(sampleData)
             .fire()
@@ -201,7 +201,7 @@ final class StubTests: XCTestCase {
                 .plugin(plugin)
         )
         
-        _ = try await Request<GitHubUser>()
+        _ = try await Call<GitHubUser>()
             .path("/users/plugintest")
             .stub(GitHubUser(login: "plugintest", id: 1))
             .fire()
@@ -221,7 +221,7 @@ final class StubTests: XCTestCase {
                 .plugin(plugin)
         )
         
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/modified")
             .stub(GitHubUser(login: "modified", id: 1))
             .fire()
@@ -233,7 +233,7 @@ final class StubTests: XCTestCase {
     // MARK: - Response Mapping Tests
     
     func testStubResponseCanBeFiltered() async throws {
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/filter")
             .stub(GitHubUser(login: "filter", id: 1))
             .fire()
@@ -244,7 +244,7 @@ final class StubTests: XCTestCase {
     }
     
     func testStubResponseCanBeMappedToJSON() async throws {
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/json")
             .stub(GitHubUser(login: "json", id: 1))
             .fire()
@@ -255,7 +255,7 @@ final class StubTests: XCTestCase {
     }
     
     func testStubResponseCanBeMappedToString() async throws {
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/string")
             .stub("{\"login\": \"string\", \"id\": 1}")
             .fire()
@@ -267,7 +267,7 @@ final class StubTests: XCTestCase {
     // MARK: - Different Request Methods Tests
     
     func testStubWorksWithPostMethod() async throws {
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users")
             .method(.post)
             .body(["name": "newuser"])
@@ -278,7 +278,7 @@ final class StubTests: XCTestCase {
     }
     
     func testStubWorksWithPutMethod() async throws {
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/1")
             .method(.put)
             .body(["name": "updateduser"])
@@ -289,7 +289,7 @@ final class StubTests: XCTestCase {
     }
     
     func testStubWorksWithDeleteMethod() async throws {
-        let response = try await Request<Empty>()
+        let response = try await Call<Empty>()
             .path("/users/1")
             .method(.delete)
             .stub(Data())
@@ -306,7 +306,7 @@ final class StubTests: XCTestCase {
         
         let jsonData = "{\"login\": \"customdecoder\", \"id\": 1}".data(using: .utf8)!
         
-        let response = try await Request<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/customdecoder")
             .stub(jsonData)
             .decoder(decoder)
@@ -321,7 +321,7 @@ final class StubTests: XCTestCase {
         let expectation = XCTestExpectation(description: "onComplete called")
         let receivedModel = SendableBox<GitHubUser?>(nil)
         
-        _ = try await Request<GitHubUser>()
+        _ = try await Call<GitHubUser>()
             .path("/users/oncomplete")
             .stub(GitHubUser(login: "oncomplete", id: 123))
             .onComplete { response in
@@ -343,7 +343,7 @@ final class StubTests: XCTestCase {
         let expectation = XCTestExpectation(description: "onComplete called on success")
         let wasSuccess = SendableBox(false)
         
-        _ = try await Request<GitHubUser>()
+        _ = try await Call<GitHubUser>()
             .path("/users/success")
             .stub(GitHubUser(login: "success", id: 1))
             .onComplete { response in
@@ -367,7 +367,7 @@ final class StubTests: XCTestCase {
         let invalidData = "not valid json".data(using: .utf8)!
         
         do {
-            _ = try await Request<GitHubUser>()
+            _ = try await Call<GitHubUser>()
                 .path("/users/invalid")
                 .stub(invalidData)
                 .onComplete { response in
@@ -391,7 +391,7 @@ final class StubTests: XCTestCase {
         // Simulates a real-world use case: saving to database on completion
         let savedUsers = SendableArray<GitHubUser>()
         
-        let user1 = try await Request<GitHubUser>()
+        let user1 = try await Call<GitHubUser>()
             .path("/users/user1")
             .stub(GitHubUser(login: "user1", id: 1))
             .onComplete { response in
@@ -401,7 +401,7 @@ final class StubTests: XCTestCase {
             }
             .fetch()
         
-        let user2 = try await Request<GitHubUser>()
+        let user2 = try await Call<GitHubUser>()
             .path("/users/user2")
             .stub(GitHubUser(login: "user2", id: 2))
             .onComplete { response in
@@ -424,7 +424,7 @@ final class StubTests: XCTestCase {
         
         let stubData = "{\"login\": \"metadata\", \"id\": 999}".data(using: .utf8)!
         
-        _ = try await Request<GitHubUser>()
+        _ = try await Call<GitHubUser>()
             .path("/users/metadata")
             .stub(stubData)
             .onComplete { response in
@@ -449,7 +449,7 @@ final class StubTests: XCTestCase {
         let encoder = JSONEncoder()
         let stubData = try encoder.encode(users)
         
-        _ = try await Request<[GitHubUser]>()
+        _ = try await Call<[GitHubUser]>()
             .path("/users")
             .stub(stubData)
             .onComplete { response in
@@ -473,7 +473,7 @@ final class StubTests: XCTestCase {
         let startTime = Date()
         let delay: TimeInterval = 0.3
         
-        _ = try await Request<GitHubUser>()
+        _ = try await Call<GitHubUser>()
             .path("/users/delayed")
             .stub(GitHubUser(login: "delayed", id: 1))
             .stub(behavior: .delayed(delay))

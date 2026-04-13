@@ -10,13 +10,13 @@ import Foundation
 
 // MARK: - API Factories (Iris Style)
 
-/// GitHub API request factory - demonstrates Iris chainable API usage.
+/// GitHub API call factory - demonstrates Iris chainable API usage.
 enum GitHubAPI {
     static let baseURL = "https://api.github.com"
     
     /// Fetches the GitHub Zen message.
-    static func zen() -> Request<String> {
-        Request<String>()
+    static func zen() -> Call<String> {
+        Call<String>()
             .baseURL(baseURL)
             .path("/zen")
             .method(.get)
@@ -24,8 +24,8 @@ enum GitHubAPI {
     }
     
     /// Fetches a user's profile by username.
-    static func userProfile(_ name: String) -> Request<GitHubUser> {
-        Request<GitHubUser>()
+    static func userProfile(_ name: String) -> Call<GitHubUser> {
+        Call<GitHubUser>()
             .baseURL(baseURL)
             .path("/users/\(name.urlEscaped)")
             .method(.get)
@@ -39,8 +39,8 @@ enum HTTPBinAPI {
     static let baseURL = "http://httpbin.org"
     
     /// Tests basic authentication.
-    static func basicAuth() -> Request<AuthResponse> {
-        Request<AuthResponse>()
+    static func basicAuth() -> Call<AuthResponse> {
+        Call<AuthResponse>()
             .baseURL(baseURL)
             .path("/basic-auth/user/passwd")
             .method(.get)
@@ -48,8 +48,8 @@ enum HTTPBinAPI {
     }
     
     /// Tests POST requests.
-    static func post() -> Request<HTTPBinResponse> {
-        Request<HTTPBinResponse>()
+    static func post() -> Call<HTTPBinResponse> {
+        Call<HTTPBinResponse>()
             .baseURL(baseURL)
             .path("/post")
             .method(.post)
@@ -57,8 +57,8 @@ enum HTTPBinAPI {
     }
     
     /// Tests file upload.
-    static func upload(file: URL) -> Request<HTTPBinResponse> {
-        Request<HTTPBinResponse>()
+    static func upload(file: URL) -> Call<HTTPBinResponse> {
+        Call<HTTPBinResponse>()
             .baseURL(baseURL)
             .path("/post")
             .method(.post)
@@ -70,8 +70,8 @@ enum HTTPBinAPI {
     static func uploadMultipart(
         parts: [MultipartFormBodyPart],
         urlParameters: [String: Any]? = nil
-    ) -> Request<HTTPBinResponse> {
-        var request = Request<HTTPBinResponse>()
+    ) -> Call<HTTPBinResponse> {
+        var request = Call<HTTPBinResponse>()
             .baseURL(baseURL)
             .path("/post")
             .method(.post)
@@ -91,7 +91,7 @@ enum HTTPBinAPI {
         parts: [MultipartFormBodyPart],
         urlParameters: [String: Any]? = nil,
         codes: [Int]
-    ) -> Request<HTTPBinResponse> {
+    ) -> Call<HTTPBinResponse> {
         var request = uploadMultipart(parts: parts, urlParameters: urlParameters)
         request = request.validate(.customCodes(codes))
         return request
@@ -114,8 +114,8 @@ enum GitHubUserContentAPI {
     static let baseURL = "https://raw.githubusercontent.com"
     
     /// Downloads content from the Moya repository.
-    static func downloadMoyaWebContent(_ contentPath: String) -> Request<Data> {
-        Request<Data>()
+    static func downloadMoyaWebContent(_ contentPath: String) -> Call<Data> {
+        Call<Data>()
             .baseURL(baseURL)
             .path("/Moya/Moya/master/web/\(contentPath)")
             .method(.get)
@@ -124,8 +124,8 @@ enum GitHubUserContentAPI {
     }
     
     /// Requests content from the Moya repository.
-    static func requestMoyaWebContent(_ contentPath: String) -> Request<Data> {
-        Request<Data>()
+    static func requestMoyaWebContent(_ contentPath: String) -> Call<Data> {
+        Call<Data>()
             .baseURL(baseURL)
             .path("/Moya/Moya/master/web/\(contentPath)")
             .method(.get)
@@ -216,7 +216,7 @@ struct GitHubUser: Codable, Equatable {
 func makeSimpleEndpoint(
     url: String = "https://api.github.com/zen",
     method: HTTPMethod = .get,
-    task: RequestTask = .requestPlain,
+    task: CallTask = .requestPlain,
     sampleData: Data = "Half measures are as bad as nothing at all.".data(using: .utf8)!,
     headers: [String: String]? = ["Title": "Dominar"]
 ) -> Endpoint {

@@ -46,13 +46,13 @@ internal typealias AFUploadRequest = Alamofire.UploadRequest
 internal typealias AFDataRequest = Alamofire.DataRequest
 internal typealias URLRequestConvertible = Alamofire.URLRequestConvertible
 
-// MARK: - AFRequest + RequestType
+// MARK: - AFRequest + CallType
 
-/// Makes Alamofire's Request conform to our RequestType protocol.
+/// Makes Alamofire's Request conform to our CallType protocol.
 ///
 /// This allows plugins to work with Alamofire requests without directly
 /// depending on Alamofire types.
-extension AFRequest: RequestType {
+extension AFRequest: CallType {
     // Note: AFRequest already has a `request` property
     
     /// Additional headers from the session configuration.
@@ -181,13 +181,13 @@ public final class CancellableToken: Cancellable, CustomDebugStringConvertible {
     }
 }
 
-// MARK: - IrisRequestInterceptor
+// MARK: - IrisCallInterceptor
 
 /// An interceptor that bridges the Plugin system to Alamofire.
 ///
 /// This interceptor calls the prepare and willSend plugin methods at the
 /// appropriate points in the request lifecycle.
-final class IrisRequestInterceptor: Alamofire.RequestInterceptor, @unchecked Sendable {
+final class IrisCallInterceptor: Alamofire.RequestInterceptor, @unchecked Sendable {
     // Note: @unchecked Sendable is safe here because:
     // 1. Properties are set once at initialization and never mutated after
     // 2. The closures are only called from Alamofire's internal synchronization

@@ -14,7 +14,7 @@ import Foundation
 /// information needed to construct a network request. Types conforming to this
 /// protocol describe what an API endpoint looks like.
 ///
-/// While Iris provides the `Request` struct as the primary way to build requests
+/// While Iris provides the `Call` struct as the primary way to build requests
 /// using a chainable API, `TargetType` allows for enum-based API definitions
 /// similar to Moya's approach.
 ///
@@ -64,8 +64,8 @@ public protocol TargetType {
     /// The type of HTTP task to be performed.
     ///
     /// This determines how the request body and parameters are configured.
-    /// See `Task` for available options like plain requests, uploads, downloads, etc.
-    var task: RequestTask { get }
+    /// See `CallTask` for available options like plain requests, uploads, downloads, etc.
+    var task: CallTask { get }
 
     /// The type of validation to perform on the request.
     ///

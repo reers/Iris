@@ -21,10 +21,10 @@ public struct Iris {
     /// This is the primary method for executing network requests. It handles both
     /// real network requests and stub responses for testing purposes.
     ///
-    /// - Parameter request: The `Request` object containing all configuration for the network call.
+    /// - Parameter request: The `Call` object containing all configuration for the network call.
     /// - Returns: A `Response<Model>` containing the decoded model and raw response data.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
-    public static func send<Model: Decodable>(_ request: Request<Model>) async throws -> Response<Model> {
+    public static func send<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
         // Check if stub behavior is configured
         let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
         if let stubBehavior = stubBehavior {
@@ -41,10 +41,10 @@ public struct Iris {
     /// Use this when you only need the decoded model and don't need access to
     /// response metadata like status codes or headers.
     ///
-    /// - Parameter request: The `Request` object containing all configuration for the network call.
+    /// - Parameter request: The `Call` object containing all configuration for the network call.
     /// - Returns: The decoded model of type `Model`.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
-    public static func fetch<Model: Decodable>(_ request: Request<Model>) async throws -> Model {
+    public static func fetch<Model: Decodable>(_ request: Call<Model>) async throws -> Model {
         let response = try await send(request)
         return try response.unwrap()
     }
@@ -61,10 +61,10 @@ public struct Iris {
     /// 5. Notifies plugins of response
     /// 6. Decodes the response into the expected model type
     ///
-    /// - Parameter request: The `Request` object to execute.
+    /// - Parameter request: The `Call` object to execute.
     /// - Returns: A `Response<Model>` containing the decoded model.
     /// - Throws: `IrisError` if any step in the request lifecycle fails.
-    private static func performRequest<Model: Decodable>(_ request: Request<Model>) async throws -> Response<Model> {
+    private static func performRequest<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
         // 1. Create Endpoint
         let endpoint = createEndpoint(from: request)
         
@@ -84,13 +84,13 @@ public struct Iris {
         // 4. Create interceptor (bridges Plugin system to Alamofire)
         // Capture plugins array to satisfy Sendable requirement
         let plugins = configuration.plugins
-        let interceptor = IrisRequestInterceptor(
+        let interceptor = IrisCallInterceptor(
             prepare: { @Sendable urlRequest in
                 plugins.reduce(urlRequest) { $1.prepare($0, target: request) }
             },
             willSend: { @Sendable urlRequest in
-                let requestType = RequestTypeWrapper(request: urlRequest)
-                plugins.forEach { $0.willSend(requestType, target: request) }
+                let callType = CallTypeWrapper(request: urlRequest)
+                plugins.forEach { $0.willSend(callType, target: request) }
             }
         )
         
@@ -221,7 +221,7 @@ public struct Iris {
     ///
     /// - Parameter request: The request to convert.
     /// - Returns: An `Endpoint` representing the request.
-    private static func createEndpoint<Model: Decodable>(from request: Request<Model>) -> Endpoint {
+    private static func createEndpoint<Model: Decodable>(from request: Call<Model>) -> Endpoint {
         let url = request.baseURL.appendingPathComponent(request.path).absoluteString
         
         return Endpoint(
@@ -243,8 +243,8 @@ public struct Iris {
     /// - Throws: `IrisError` if the request fails.
     private static func performDataRequest<Model: Decodable>(
         _ urlRequest: URLRequest,
-        interceptor: IrisRequestInterceptor,
-        request: Request<Model>
+        interceptor: IrisCallInterceptor,
+        request: Call<Model>
     ) async throws -> RawResponse {
         try await withCheckedThrowingContinuation { continuation in
             let validationCodes = request.validationType.statusCodes
@@ -295,8 +295,8 @@ public struct Iris {
     private static func performUploadFile<Model: Decodable>(
         _ urlRequest: URLRequest,
         fileURL: URL,
-        interceptor: IrisRequestInterceptor,
-        request: Request<Model>
+        interceptor: IrisCallInterceptor,
+        request: Call<Model>
     ) async throws -> RawResponse {
         try await withCheckedThrowingContinuation { continuation in
             let validationCodes = request.validationType.statusCodes
@@ -342,8 +342,8 @@ public struct Iris {
     private static func performUploadMultipart<Model: Decodable>(
         _ urlRequest: URLRequest,
         formData: MultipartFormData,
-        interceptor: IrisRequestInterceptor,
-        request: Request<Model>
+        interceptor: IrisCallInterceptor,
+        request: Call<Model>
     ) async throws -> RawResponse {
         try await withCheckedThrowingContinuation { continuation in
             let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
@@ -392,8 +392,8 @@ public struct Iris {
     private static func performDownload<Model: Decodable>(
         _ urlRequest: URLRequest,
         destination: @escaping DownloadDestination,
-        interceptor: IrisRequestInterceptor,
-        request: Request<Model>
+        interceptor: IrisCallInterceptor,
+        request: Call<Model>
     ) async throws -> RawResponse {
         try await withCheckedThrowingContinuation { continuation in
             let validationCodes = request.validationType.statusCodes
@@ -439,7 +439,7 @@ public struct Iris {
     /// - Returns: A `Response<Model>` containing the decoded stub data.
     /// - Throws: `IrisError` if decoding the stub data fails.
     private static func performStub<Model: Decodable>(
-        _ request: Request<Model>,
+        _ request: Call<Model>,
         behavior: StubBehavior
     ) async throws -> Response<Model> {
         // Calculate delay
@@ -465,8 +465,8 @@ public struct Iris {
         )
         
         // Notify plugins
-        let requestType = RequestTypeWrapper(request: nil)
-        configuration.plugins.forEach { $0.willSend(requestType, target: request) }
+        let callType = CallTypeWrapper(request: nil)
+        configuration.plugins.forEach { $0.willSend(callType, target: request) }
         let result: Result<RawResponse, IrisError> = .success(rawResponse)
         configuration.plugins.forEach { $0.didReceive(result, target: request) }
         
@@ -544,13 +544,13 @@ public struct Iris {
     }
 }
 
-// MARK: - RequestTypeWrapper
+// MARK: - CallTypeWrapper
 
-/// A simple wrapper conforming to `RequestType` for plugin integration.
+/// A simple wrapper conforming to `CallType` for plugin integration.
 ///
 /// This wrapper is used internally to provide request information to plugins
 /// during the request lifecycle.
-private struct RequestTypeWrapper: RequestType {
+private struct CallTypeWrapper: CallType {
     
     /// The underlying URL request.
     let request: URLRequest?

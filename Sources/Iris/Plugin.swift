@@ -26,7 +26,7 @@ import Foundation
 /// Example:
 /// ```swift
 /// class LoggingPlugin: PluginType {
-///     func willSend(_ request: RequestType, target: TargetType) {
+///     func willSend(_ request: CallType, target: TargetType) {
 ///         print("Sending request to: \(target.path)")
 ///     }
 ///
@@ -56,7 +56,7 @@ public protocol PluginType {
     /// - Parameters:
     ///   - request: The request that is about to be sent.
     ///   - target: The target type that generated this request.
-    func willSend(_ request: RequestType, target: TargetType)
+    func willSend(_ request: CallType, target: TargetType)
 
     /// Called after a response has been received, but before Iris has invoked its completion handler.
     ///
@@ -88,7 +88,7 @@ public extension PluginType {
     func prepare(_ request: URLRequest, target: TargetType) -> URLRequest { request }
     
     /// Default implementation does nothing.
-    func willSend(_ request: RequestType, target: TargetType) { }
+    func willSend(_ request: CallType, target: TargetType) { }
     
     /// Default implementation does nothing.
     func didReceive(_ result: Result<RawResponse, IrisError>, target: TargetType) { }
@@ -97,13 +97,13 @@ public extension PluginType {
     func process(_ result: Result<RawResponse, IrisError>, target: TargetType) -> Result<RawResponse, IrisError> { result }
 }
 
-// MARK: - RequestType
+// MARK: - CallType
 
 /// Request type used by `willSend` plugin function.
 ///
 /// This protocol provides a way to access request information without
 /// exposing Alamofire's internal types to plugins.
-public protocol RequestType {
+public protocol CallType {
 
     // Note:
     //
