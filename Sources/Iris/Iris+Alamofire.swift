@@ -7,7 +7,7 @@
 //
 
 import Foundation
-import Alamofire
+@_exported import Alamofire
 
 // MARK: - Public Type Aliases
 
