@@ -59,7 +59,7 @@ struct User: Codable {
 }
 
 // Make a request
-let user = try await Request<User>()
+let user = try await Call<User>()
     .path("/users/1")
     .method(.get)
     .fetch()
@@ -69,21 +69,21 @@ print(user.name)
 
 ### Defining API Endpoints
 
-Iris encourages defining your API endpoints as static factory methods on `Request`:
+Iris encourages defining your API endpoints as static factory methods on `Call`:
 
 ```swift
-extension Request {
+extension Call {
     /// Fetches a user by ID.
-    static func getUser(id: Int) -> Request<User> {
-        Request<User>()
+    static func getUser(id: Int) -> Call<User> {
+        Call<User>()
             .path("/users/\(id)")
             .method(.get)
             .validateSuccessCodes()
     }
     
     /// Creates a new user.
-    static func createUser(name: String, email: String) -> Request<User> {
-        Request<User>()
+    static func createUser(name: String, email: String) -> Call<User> {
+        Call<User>()
             .path("/users")
             .method(.post)
             .body(["name": name, "email": email])
@@ -91,8 +91,8 @@ extension Request {
     }
     
     /// Uploads a user's avatar.
-    static func uploadAvatar(userId: Int, imageData: Data) -> Request<User> {
-        Request<User>()
+    static func uploadAvatar(userId: Int, imageData: Data) -> Call<User> {
+        Call<User>()
             .path("/users/\(userId)/avatar")
             .method(.post)
             .upload(multipart: [
@@ -112,10 +112,10 @@ extension Request {
 
 ```swift
 // Method 1: fetch() - Returns the decoded model directly
-let user = try await Request<User>.getUser(id: 123).fetch()
+let user = try await Call<User>.getUser(id: 123).fetch()
 
 // Method 2: fire() - Returns Response<Model> with metadata
-let response = try await Request<User>.getUser(id: 123).fire()
+let response = try await Call<User>.getUser(id: 123).fire()
 print("Status: \(response.statusCode)")
 print("User: \(response.model!.name)")
 
@@ -130,7 +130,7 @@ if response.isSuccess {
 ### HTTP Methods
 
 ```swift
-Request<User>()
+Call<User>()
     .method(.get)      // GET (default)
     .method(.post)     // POST
     .method(.put)      // PUT
@@ -141,7 +141,7 @@ Request<User>()
 ### Headers
 
 ```swift
-Request<User>()
+Call<User>()
     .headers(["Content-Type": "application/json"])
     .header("X-Custom", "value")
     .authorization("Basic abc123")
@@ -152,7 +152,7 @@ Request<User>()
 
 ```swift
 // JSON dictionary
-Request<User>()
+Call<User>()
     .body(["name": "John", "email": "john@example.com"])
 
 // Encodable object
@@ -160,23 +160,23 @@ struct CreateUser: Encodable {
     let name: String
     let email: String
 }
-Request<User>()
+Call<User>()
     .body(CreateUser(name: "John", email: "john@example.com"))
 
 // Raw data
-Request<Empty>()
+Call<Empty>()
     .body(someData)
 
 // Form URL-encoded
-Request<User>()
+Call<User>()
     .formBody(["username": "john", "password": "secret"])
 
 // URL query parameters
-Request<[User]>()
+Call<[User]>()
     .query(["page": 1, "limit": 10])
 
 // Combined URL parameters and body
-Request<User>()
+Call<User>()
     .composite(query: ["version": "v2"], body: ["name": "John"])
 ```
 
@@ -184,11 +184,11 @@ Request<User>()
 
 ```swift
 // Single file upload
-Request<Response>()
+Call<Response>()
     .upload(file: fileURL)
 
 // Multipart form data
-Request<Response>()
+Call<Response>()
     .upload(multipart: [
         MultipartFormBodyPart(
             provider: .data(imageData),
@@ -212,7 +212,7 @@ let destination: DownloadDestination = { temporaryURL, response in
     return (fileURL, [.removePreviousFile, .createIntermediateDirectories])
 }
 
-Request<Data>()
+Call<Data>()
     .path("/files/document.pdf")
     .download(to: destination)
 ```
@@ -220,7 +220,7 @@ Request<Data>()
 ### Validation
 
 ```swift
-Request<User>()
+Call<User>()
     .validateSuccessCodes()              // Accept only 2xx
     .validateSuccessAndRedirectCodes()   // Accept 2xx and 3xx
     .validate(statusCodes: [200, 201])   // Accept specific codes
@@ -230,7 +230,7 @@ Request<User>()
 ### Timeout
 
 ```swift
-Request<User>()
+Call<User>()
     .timeout(60)  // 60 seconds
 ```
 
@@ -296,7 +296,7 @@ Iris.configure(
 Individual requests can override global settings:
 
 ```swift
-Request<User>()
+Call<User>()
     .baseURL("https://other-api.example.com")  // Override base URL
     .timeout(60)                                // Override timeout
     .decoder(customDecoder)                     // Override decoder
@@ -314,7 +314,7 @@ class LoggingPlugin: PluginType {
         return request
     }
     
-    func willSend(_ request: RequestType, target: TargetType) {
+    func willSend(_ request: CallType, target: TargetType) {
         // Called just before request is sent
         print("Sending request to: \(target.path)")
     }
@@ -358,14 +358,14 @@ Iris.configure(
 )
 
 // Provide stub data per request
-let user = try await Request<User>()
+let user = try await Call<User>()
     .path("/users/1")
     .stub(User(id: 1, name: "Test User"))  // From Encodable
     .stub(behavior: .immediate)
     .fetch()
 
 // Or use raw data/string
-Request<User>()
+Call<User>()
     .stub("{\"id\": 1, \"name\": \"Test\"}".data(using: .utf8)!)
     .stub("{\"id\": 1, \"name\": \"Test\"}")  // From string
 ```
@@ -379,7 +379,7 @@ class UserServiceTests: XCTestCase {
     }
     
     func testGetUser() async throws {
-        let user = try await Request<User>()
+        let user = try await Call<User>()
             .path("/users/1")
             .stub(User(id: 1, name: "Test"))
             .fetch()
@@ -425,13 +425,13 @@ do {
 typealias RawResponse = Response<Never>
 
 // Request that doesn't parse response
-typealias RawRequest = Request<Raw>
+typealias RawCall = Call<Raw>
 typealias Raw = Empty
 
 // Create a request without response parsing
-let request = Request.plain()
+let request = Call.plain()
 // or
-let request = Request.raw()
+let request = Call.raw()
 ```
 
 ## Requirements

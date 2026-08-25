@@ -25,14 +25,14 @@ final class PluginTests: XCTestCase {
     func testEmptyPluginUsesDefaultImplementations() {
         let plugin = EmptyPlugin()
         let request = URLRequest(url: URL(string: "https://example.com")!)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         
         // prepare should return the same request
         let preparedRequest = plugin.prepare(request, target: target)
         XCTAssertEqual(preparedRequest.url, request.url)
         
         // willSend should not crash
-        plugin.willSend(MockRequestType(), target: target)
+        plugin.willSend(MockCallType(), target: target)
         
         // didReceive should not crash
         let response = RawResponse(statusCode: 200, data: Data())
@@ -53,7 +53,7 @@ final class PluginTests: XCTestCase {
     func testTestingPluginPrepare() {
         let plugin = TestingPlugin()
         var request = URLRequest(url: URL(string: "https://example.com")!)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         
         request = plugin.prepare(request, target: target)
         
@@ -64,14 +64,14 @@ final class PluginTests: XCTestCase {
     func testTestingPluginWillSend() {
         let plugin = TestingPlugin()
         var request = URLRequest(url: URL(string: "https://example.com")!)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         
         // First prepare the request
         request = plugin.prepare(request, target: target)
         
         // Then call willSend
-        let mockRequestType = MockRequestType(request: request)
-        plugin.willSend(mockRequestType, target: target)
+        let mockCallType = MockCallType(request: request)
+        plugin.willSend(mockCallType, target: target)
         
         XCTAssertNotNil(plugin.request)
         XCTAssertTrue(plugin.didPrepare)
@@ -80,7 +80,7 @@ final class PluginTests: XCTestCase {
     
     func testTestingPluginDidReceive() {
         let plugin = TestingPlugin()
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let response = RawResponse(statusCode: 200, data: Data())
         
         plugin.didReceive(.success(response), target: target)
@@ -97,7 +97,7 @@ final class PluginTests: XCTestCase {
     
     func testTestingPluginProcess() {
         let plugin = TestingPlugin()
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let response = RawResponse(statusCode: 200, data: Data())
         
         let processedResult = plugin.process(.success(response), target: target)
@@ -114,13 +114,13 @@ final class PluginTests: XCTestCase {
     
     func testTestingPluginReset() {
         let plugin = TestingPlugin()
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let request = URLRequest(url: URL(string: "https://example.com")!)
         let response = RawResponse(statusCode: 200, data: Data())
         
         // Call all methods
         _ = plugin.prepare(request, target: target)
-        plugin.willSend(MockRequestType(), target: target)
+        plugin.willSend(MockCallType(), target: target)
         plugin.didReceive(.success(response), target: target)
         _ = plugin.process(.success(response), target: target)
         
@@ -145,11 +145,11 @@ final class PluginTests: XCTestCase {
     func testOrderTrackingPlugin() {
         let plugin = OrderTrackingPlugin()
         let request = URLRequest(url: URL(string: "https://example.com")!)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let response = RawResponse(statusCode: 200, data: Data())
         
         _ = plugin.prepare(request, target: target)
-        plugin.willSend(MockRequestType(), target: target)
+        plugin.willSend(MockCallType(), target: target)
         plugin.didReceive(.success(response), target: target)
         _ = plugin.process(.success(response), target: target)
         
@@ -161,7 +161,7 @@ final class PluginTests: XCTestCase {
     func testHeaderModifyingPlugin() {
         let plugin = HeaderModifyingPlugin(headerKey: "X-Custom", headerValue: "CustomValue")
         var request = URLRequest(url: URL(string: "https://example.com")!)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         
         request = plugin.prepare(request, target: target)
         
@@ -172,7 +172,7 @@ final class PluginTests: XCTestCase {
     
     func testResponseModifyingPlugin() {
         let plugin = ResponseModifyingPlugin(newStatusCode: 201)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let response = RawResponse(statusCode: 200, data: Data())
         
         let processedResult = plugin.process(.success(response), target: target)
@@ -186,7 +186,7 @@ final class PluginTests: XCTestCase {
     
     func testResponseModifyingPluginPreservesFailure() {
         let plugin = ResponseModifyingPlugin(newStatusCode: 201)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let error = IrisError.requestMapping("test")
         
         let processedResult = plugin.process(.failure(error), target: target)
@@ -203,7 +203,7 @@ final class PluginTests: XCTestCase {
     func testErrorInjectingPlugin() {
         let injectedError = IrisError.requestMapping("injected error")
         let plugin = ErrorInjectingPlugin(error: injectedError)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let response = RawResponse(statusCode: 200, data: Data())
         
         let processedResult = plugin.process(.success(response), target: target)
@@ -232,8 +232,8 @@ final class PluginTests: XCTestCase {
             }
         }
         
-        let target = Request<Empty>().path("/test")
-        plugin.willSend(MockRequestType(), target: target)
+        let target = Call<Empty>().path("/test")
+        plugin.willSend(MockCallType(), target: target)
         
         XCTAssertTrue(beganCalled)
         XCTAssertNotNil(receivedTarget)
@@ -250,7 +250,7 @@ final class PluginTests: XCTestCase {
             }
         }
         
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let response = RawResponse(statusCode: 200, data: Data())
         plugin.didReceive(.success(response), target: target)
         
@@ -265,7 +265,7 @@ final class PluginTests: XCTestCase {
         let plugin2 = OrderTrackingPlugin()
         
         let request = URLRequest(url: URL(string: "https://example.com")!)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         _ = RawResponse(statusCode: 200, data: Data())
         
         // Simulate plugin chain for prepare
@@ -283,7 +283,7 @@ final class PluginTests: XCTestCase {
         let plugin2 = HeaderModifyingPlugin(headerKey: "X-Second", headerValue: "second")
         
         var request = URLRequest(url: URL(string: "https://example.com")!)
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         
         request = plugin1.prepare(request, target: target)
         request = plugin2.prepare(request, target: target)
@@ -296,7 +296,7 @@ final class PluginTests: XCTestCase {
         let plugin1 = ResponseModifyingPlugin(newStatusCode: 201)
         let plugin2 = ResponseModifyingPlugin(newStatusCode: 202)
         
-        let target = Request<Empty>().path("/test")
+        let target = Call<Empty>().path("/test")
         let response = RawResponse(statusCode: 200, data: Data())
         
         var result: Result<RawResponse, IrisError> = .success(response)
@@ -312,10 +312,10 @@ final class PluginTests: XCTestCase {
     }
 }
 
-// MARK: - Mock RequestType
+// MARK: - Mock CallType
 
-/// A mock implementation of RequestType for testing plugins.
-private struct MockRequestType: RequestType {
+/// A mock implementation of CallType for testing plugins.
+private struct MockCallType: CallType {
     var request: URLRequest?
     var sessionHeaders: [String: String] = [:]
     
@@ -323,15 +323,15 @@ private struct MockRequestType: RequestType {
         self.request = request
     }
     
-    func authenticate(username: String, password: String, persistence: URLCredential.Persistence) -> MockRequestType {
+    func authenticate(username: String, password: String, persistence: URLCredential.Persistence) -> MockCallType {
         return self
     }
     
-    func authenticate(with credential: URLCredential) -> MockRequestType {
+    func authenticate(with credential: URLCredential) -> MockCallType {
         return self
     }
     
-    func cURLDescription(calling handler: @escaping (String) -> Void) -> MockRequestType {
+    func cURLDescription(calling handler: @escaping (String) -> Void) -> MockCallType {
         handler(request?.description ?? "")
         return self
     }

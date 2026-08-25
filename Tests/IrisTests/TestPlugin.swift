@@ -17,7 +17,7 @@ import Foundation
 final class TestingPlugin: PluginType {
     
     /// The last request and target passed to willSend.
-    var request: (RequestType, TargetType)?
+    var request: (CallType, TargetType)?
     
     /// The last result passed to didReceive.
     var result: Result<RawResponse, IrisError>?
@@ -44,7 +44,7 @@ final class TestingPlugin: PluginType {
         return request
     }
     
-    func willSend(_ request: RequestType, target: TargetType) {
+    func willSend(_ request: CallType, target: TargetType) {
         willSendCalledCount += 1
         self.request = (request, target)
         
@@ -101,7 +101,7 @@ final class OrderTrackingPlugin: PluginType {
         return request
     }
     
-    func willSend(_ request: RequestType, target: TargetType) {
+    func willSend(_ request: CallType, target: TargetType) {
         callOrder.append("willSend")
     }
     
@@ -223,7 +223,7 @@ final class NetworkActivityPlugin: PluginType {
         self.networkActivityClosure = networkActivityClosure
     }
     
-    func willSend(_ request: RequestType, target: TargetType) {
+    func willSend(_ request: CallType, target: TargetType) {
         networkActivityClosure(.began, target)
     }
     

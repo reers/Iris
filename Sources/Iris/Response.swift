@@ -32,7 +32,7 @@ public typealias Image = NSImage
 ///
 /// Example:
 /// ```swift
-/// let response = try await Request<User>.getUser(id: 1).fire()
+/// let response = try await Call<User>.getUser(id: 1).fire()
 ///
 /// // Access the decoded model
 /// if let user = response.model {

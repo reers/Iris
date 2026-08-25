@@ -65,7 +65,7 @@ open class Endpoint {
     /// The `Task` for the request.
     ///
     /// This defines how the request body and parameters are configured.
-    public let task: RequestTask
+    public let task: CallTask
 
     /// The HTTP header fields for the request.
     public let httpHeaderFields: [String: String]?
@@ -81,7 +81,7 @@ open class Endpoint {
     public init(url: String,
                 sampleResponseClosure: @escaping SampleResponseClosure,
                 method: Method,
-                task: RequestTask,
+                task: CallTask,
                 httpHeaderFields: [String: String]?) {
 
         self.url = url
@@ -109,7 +109,7 @@ open class Endpoint {
     ///
     /// - Parameter task: The new task to use.
     /// - Returns: A new `Endpoint` with the replaced task.
-    open func replacing(task: RequestTask) -> Endpoint {
+    open func replacing(task: CallTask) -> Endpoint {
         Endpoint(url: url, sampleResponseClosure: sampleResponseClosure, method: method, task: task, httpHeaderFields: httpHeaderFields)
     }
 

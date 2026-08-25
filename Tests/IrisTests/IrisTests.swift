@@ -25,10 +25,10 @@ struct Post: Codable {
 
 // MARK: - API Definition Examples (Iris Style - All configuration in one place!)
 
-extension Request {
+extension Call {
     
     /// Fetches a single user by ID.
-    static func getUser(id: Int) -> Request<User> {
+    static func getUser(id: Int) -> Call<User> {
         .init()
             .path("/users/\(id)")
             .method(.get)
@@ -36,14 +36,14 @@ extension Request {
     }
     
     /// Fetches a paginated list of users.
-    static func getUsers(page: Int, limit: Int) -> Request<[User]> {
+    static func getUsers(page: Int, limit: Int) -> Call<[User]> {
         .init()
             .path("/users")
             .query(["page": page, "limit": limit])
     }
     
     /// Creates a new user.
-    static func createUser(name: String) -> Request<User> {
+    static func createUser(name: String) -> Call<User> {
         .init()
             .path("/users")
             .method(.post)
@@ -52,7 +52,7 @@ extension Request {
     }
     
     /// Uploads a user avatar image.
-    static func uploadAvatar(userId: Int, imageData: Data) -> Request<User> {
+    static func uploadAvatar(userId: Int, imageData: Data) -> Call<User> {
         .init()
             .path("/users/\(userId)/avatar")
             .method(.post)
@@ -68,7 +68,7 @@ extension Request {
     }
     
     /// Creates a stubbed request for testing.
-    static func getUserWithStub(id: Int) -> Request<User> {
+    static func getUserWithStub(id: Int) -> Call<User> {
         .init()
             .path("/users/\(id)")
             .stub(User(id: id, name: "Stubbed User"))
@@ -101,7 +101,7 @@ final class IrisTests: XCTestCase {
     
     func testResponse() async throws {
         // fire() returns Response<User>
-        let response = try await Request<User>.getUserWithStub(id: 123).fire()
+        let response = try await Call<User>.getUserWithStub(id: 123).fire()
         
         // model is optional but guaranteed to have a value on successful fire()
         XCTAssertNotNil(response.model)
@@ -119,7 +119,7 @@ final class IrisTests: XCTestCase {
     
     func testFetchConvenience() async throws {
         // fetch() returns Model directly (non-optional)
-        let user = try await Request<User>.getUserWithStub(id: 456).fetch()
+        let user = try await Call<User>.getUserWithStub(id: 456).fetch()
         
         XCTAssertEqual(user.id, 456)
         XCTAssertEqual(user.name, "Stubbed User")
@@ -128,7 +128,7 @@ final class IrisTests: XCTestCase {
     // MARK: - Request Chaining Tests
     
     func testRequestChaining() {
-        let request = Request<User>()
+        let request = Call<User>()
             .path("/test")
             .method(.post)
             .header("X-Custom", "value")
@@ -146,7 +146,7 @@ final class IrisTests: XCTestCase {
     // MARK: - Empty Response Tests
     
     func testEmpty() async throws {
-        let request = Request
+        let request = Call
             .plain()
             .path("/ping")
             .stub(behavior: .immediate)
@@ -158,7 +158,7 @@ final class IrisTests: XCTestCase {
     // MARK: - Response Mapping Tests
     
     func testResponseMapping() async throws {
-        let response = try await Request<User>.getUserWithStub(id: 1).fire()
+        let response = try await Call<User>.getUserWithStub(id: 1).fire()
         
         // Map to string
         let string = try response.mapString()
@@ -174,7 +174,7 @@ final class IrisTests: XCTestCase {
     }
     
     func testResponseConvenienceProperties() async throws {
-        let response = try await Request<User>.getUserWithStub(id: 1).fire()
+        let response = try await Call<User>.getUserWithStub(id: 1).fire()
         
         // Test convenience properties
         XCTAssertTrue(response.isSuccess)
@@ -190,7 +190,7 @@ final class IrisTests: XCTestCase {
     // MARK: - RawResponse Tests
     
     func testRawResponse() async throws {
-        let response = try await Request<User>.getUserWithStub(id: 1).fire()
+        let response = try await Call<User>.getUserWithStub(id: 1).fire()
         
         // Convert to RawResponse (Response<Never>)
         let raw: RawResponse = response.asRaw()
@@ -207,7 +207,7 @@ final class IrisTests: XCTestCase {
     
     func testGitHubZenStub() async throws {
         // Iris style: Build request directly without declaring a TargetType enum
-        let response = try await Request<Empty>()
+        let response = try await Call<Empty>()
             .baseURL("https://api.github.com")
             .path("/zen")
             .method(.get)
@@ -232,7 +232,7 @@ final class IrisTests: XCTestCase {
     // MARK: - Validation Tests
     
     func testValidationWithSuccessStatusCode() async throws {
-        let response = try await Request<User>()
+        let response = try await Call<User>()
             .path("/users/1")
             .validateSuccessCodes()
             .stub(User(id: 1, name: "Test"))
@@ -256,7 +256,7 @@ final class IrisTests: XCTestCase {
                 .plugin(plugin2)
         )
         
-        _ = try await Request<User>()
+        _ = try await Call<User>()
             .path("/users/1")
             .stub(User(id: 1, name: "Test"))
             .fire()
@@ -281,8 +281,8 @@ final class IrisTests: XCTestCase {
  
  ## API Definition (All configuration in one place!)
  
- extension Request {
-     static func getUser(id: Int) -> Request<User> {
+ extension Call {
+     static func getUser(id: Int) -> Call<User> {
          .init()
              .path("/users/\(id)")
              .method(.get)
@@ -293,12 +293,12 @@ final class IrisTests: XCTestCase {
  ## Sending Requests
  
  // Method 1: fire() - Returns Response<Model>
- let response = try await Request<User>.getUser(id: 123).fire()
+ let response = try await Call<User>.getUser(id: 123).fire()
  let user = response.model!          // model is optional
  let user = try response.unwrap()    // or use unwrap()
  
  // Method 2: fetch() - Returns Model directly (recommended)
- let user = try await Request<User>.getUser(id: 123).fetch()
+ let user = try await Call<User>.getUser(id: 123).fetch()
  
  ## Type Structure
  

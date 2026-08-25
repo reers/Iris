@@ -17,15 +17,15 @@ import Foundation
 /// Example:
 /// ```swift
 /// // Only accept 2xx responses
-/// Request<User>()
+/// Call<User>()
 ///     .validate(.successCodes)
 ///
 /// // Accept 2xx and 3xx responses
-/// Request<User>()
+/// Call<User>()
 ///     .validate(.successAndRedirectCodes)
 ///
 /// // Accept specific status codes
-/// Request<User>()
+/// Call<User>()
 ///     .validate(.customCodes([200, 201, 204]))
 /// ```
 public enum ValidationType {

@@ -1,14 +1,14 @@
 //
-//  RequestTests.swift
+//  CallTests.swift
 //  IrisTests
 //
-//  Tests for the Request chainable API.
+//  Tests for the Call chainable API.
 //
 
 import XCTest
 @testable import Iris
 
-final class RequestTests: XCTestCase {
+final class CallTests: XCTestCase {
     
     override func setUp() {
         super.setUp()
@@ -19,28 +19,28 @@ final class RequestTests: XCTestCase {
     // MARK: - Basic Configuration Tests
     
     func testPathConfiguration() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .path("/users")
         
         XCTAssertEqual(request.path, "/users")
     }
     
     func testMethodConfiguration() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .method(.post)
         
         XCTAssertEqual(request.method, .post)
     }
     
     func testTimeoutConfiguration() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .timeout(60)
         
         XCTAssertEqual(request.timeout, 60)
     }
     
     func testDefaultValues() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
         
         XCTAssertEqual(request.path, "")
         XCTAssertEqual(request.method, .get)
@@ -53,21 +53,21 @@ final class RequestTests: XCTestCase {
     
     func testHeadersConfiguration() {
         let headers = ["Content-Type": "application/json", "Accept": "application/json"]
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .headers(headers)
         
         XCTAssertEqual(request.headers, headers)
     }
     
     func testSingleHeaderConfiguration() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .header("X-Custom", "value")
         
         XCTAssertEqual(request.headers?["X-Custom"], "value")
     }
     
     func testMultipleHeadersChaining() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .header("Header1", "value1")
             .header("Header2", "value2")
         
@@ -76,14 +76,14 @@ final class RequestTests: XCTestCase {
     }
     
     func testAuthorizationHeader() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .authorization("Basic abc123")
         
         XCTAssertEqual(request.headers?["Authorization"], "Basic abc123")
     }
     
     func testBearerTokenHeader() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .bearerToken("token123")
         
         XCTAssertEqual(request.headers?["Authorization"], "Bearer token123")
@@ -92,7 +92,7 @@ final class RequestTests: XCTestCase {
     // MARK: - Task Configuration Tests
     
     func testQueryParameters() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .query(["page": 1, "limit": 10])
         
         if case .requestParameters(let params, let encoding) = request.task {
@@ -100,7 +100,7 @@ final class RequestTests: XCTestCase {
             XCTAssertEqual(params["limit"] as? Int, 10)
             XCTAssertTrue(encoding is URLEncoding)
         } else {
-            XCTFail("Expected requestParameters task")
+            XCTFail("Expected callParameters task")
         }
     }
     
@@ -108,14 +108,14 @@ final class RequestTests: XCTestCase {
         // Explicitly cast to [String: Any] to use the dictionary overload
         // instead of the Encodable overload
         let params: [String: Any] = ["name": "test"]
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .body(params)
         
         if case .requestParameters(let requestParams, let encoding) = request.task {
             XCTAssertEqual(requestParams["name"] as? String, "test")
             XCTAssertTrue(encoding is JSONEncoding)
         } else {
-            XCTFail("Expected requestParameters task")
+            XCTFail("Expected callParameters task")
         }
     }
     
@@ -124,13 +124,13 @@ final class RequestTests: XCTestCase {
             let name: String
         }
         
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .body(User(name: "test"))
         
         if case .requestJSONEncodable(let encodable) = request.task {
             XCTAssertNotNil(encodable)
         } else {
-            XCTFail("Expected requestJSONEncodable task")
+            XCTFail("Expected callJSONEncodable task")
         }
     }
     
@@ -142,49 +142,49 @@ final class RequestTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .body(User(name: "test"), encoder: encoder)
         
         if case .requestCustomJSONEncodable = request.task {
             // Expected
         } else {
-            XCTFail("Expected requestCustomJSONEncodable task")
+            XCTFail("Expected callCustomJSONEncodable task")
         }
     }
     
     func testBodyData() {
         let data = "test data".data(using: .utf8)!
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .body(data)
         
         if case .requestData(let bodyData) = request.task {
             XCTAssertEqual(bodyData, data)
         } else {
-            XCTFail("Expected requestData task")
+            XCTFail("Expected callData task")
         }
     }
     
     func testFormBody() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .formBody(["username": "test", "password": "secret"])
         
         if case .requestParameters(let params, let encoding) = request.task {
             XCTAssertEqual(params["username"] as? String, "test")
             XCTAssertTrue(encoding is URLEncoding)
         } else {
-            XCTFail("Expected requestParameters task")
+            XCTFail("Expected callParameters task")
         }
     }
     
     func testCompositeRequest() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .composite(query: ["id": 1], body: ["name": "test"])
         
         if case .requestCompositeParameters(let bodyParams, _, let urlParams) = request.task {
             XCTAssertEqual(urlParams["id"] as? Int, 1)
             XCTAssertEqual(bodyParams["name"] as? String, "test")
         } else {
-            XCTFail("Expected requestCompositeParameters task")
+            XCTFail("Expected callCompositeParameters task")
         }
     }
     
@@ -192,7 +192,7 @@ final class RequestTests: XCTestCase {
     
     func testUploadFile() {
         let fileURL = URL(string: "file:///test.txt")!
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .upload(file: fileURL)
         
         if case .uploadFile(let url) = request.task {
@@ -206,7 +206,7 @@ final class RequestTests: XCTestCase {
         let formData = MultipartFormData(parts: [
             MultipartFormBodyPart(provider: .data(Data()), name: "file")
         ])
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .upload(multipart: formData)
         
         if case .uploadMultipartFormData(let data) = request.task {
@@ -220,7 +220,7 @@ final class RequestTests: XCTestCase {
         let parts = [
             MultipartFormBodyPart(provider: .data(Data()), name: "file", fileName: "test.txt", mimeType: "text/plain")
         ]
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .upload(multipart: parts)
         
         if case .uploadMultipartFormData(let data) = request.task {
@@ -234,7 +234,7 @@ final class RequestTests: XCTestCase {
     
     func testUploadMultipartWithQuery() {
         let formData = MultipartFormData(parts: [])
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .upload(multipart: formData, query: ["id": 1])
         
         if case .uploadCompositeMultipartFormData(_, let params) = request.task {
@@ -248,7 +248,7 @@ final class RequestTests: XCTestCase {
     
     func testDownloadDestination() {
         let destination: DownloadDestination = { url, _ in (url, []) }
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .download(to: destination)
         
         if case .downloadDestination = request.task {
@@ -260,7 +260,7 @@ final class RequestTests: XCTestCase {
     
     func testDownloadWithParameters() {
         let destination: DownloadDestination = { url, _ in (url, []) }
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .download(parameters: ["format": "pdf"], to: destination)
         
         if case .downloadParameters(let params, _, _) = request.task {
@@ -273,28 +273,28 @@ final class RequestTests: XCTestCase {
     // MARK: - Validation Configuration Tests
     
     func testValidationTypeNone() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .validate(.none)
         
         XCTAssertEqual(request.validationType, .none)
     }
     
     func testValidateSuccessCodes() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .validateSuccessCodes()
         
         XCTAssertEqual(request.validationType, .successCodes)
     }
     
     func testValidateSuccessAndRedirectCodes() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .validateSuccessAndRedirectCodes()
         
         XCTAssertEqual(request.validationType, .successAndRedirectCodes)
     }
     
     func testValidateCustomStatusCodes() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .validate(statusCodes: [200, 201, 204])
         
         XCTAssertEqual(request.validationType, .customCodes([200, 201, 204]))
@@ -304,14 +304,14 @@ final class RequestTests: XCTestCase {
     
     func testBaseURLFromURL() {
         let url = URL(string: "https://api.example.com")!
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .baseURL(url)
         
         XCTAssertEqual(request.baseURL, url)
     }
     
     func testBaseURLFromString() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .baseURL("https://api.example.com")
         
         XCTAssertEqual(request.baseURL.absoluteString, "https://api.example.com")
@@ -320,7 +320,7 @@ final class RequestTests: XCTestCase {
     func testBaseURLFallsBackToGlobalConfiguration() {
         Iris.configure(IrisConfiguration().baseURL("https://global.example.com"))
         
-        let request = Request<Empty>()
+        let request = Call<Empty>()
         
         XCTAssertEqual(request.baseURL.absoluteString, "https://global.example.com")
     }
@@ -328,7 +328,7 @@ final class RequestTests: XCTestCase {
     func testBaseURLOverridesGlobalConfiguration() {
         Iris.configure(IrisConfiguration().baseURL("https://global.example.com"))
         
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .baseURL("https://local.example.com")
         
         XCTAssertEqual(request.baseURL.absoluteString, "https://local.example.com")
@@ -340,7 +340,7 @@ final class RequestTests: XCTestCase {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .decoder(decoder)
         
         XCTAssertNotNil(request.decoder)
@@ -350,7 +350,7 @@ final class RequestTests: XCTestCase {
     
     func testStubData() {
         let data = "stub data".data(using: .utf8)!
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .stub(data)
         
         XCTAssertEqual(request.sampleData, data)
@@ -361,21 +361,21 @@ final class RequestTests: XCTestCase {
             let name: String
         }
         
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .stub(User(name: "test"))
         
         XCTAssertFalse(request.sampleData.isEmpty)
     }
     
     func testStubFromString() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .stub("{\"name\": \"test\"}")
         
         XCTAssertEqual(String(data: request.sampleData, encoding: .utf8), "{\"name\": \"test\"}")
     }
     
     func testStubBehavior() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .stub(behavior: .immediate)
         
         XCTAssertNotNil(request.stubBehavior)
@@ -387,7 +387,7 @@ final class RequestTests: XCTestCase {
     }
     
     func testStubBehaviorDelayed() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .stub(behavior: .delayed(1.5))
         
         if case .delayed(let delay) = request.stubBehavior {
@@ -400,14 +400,14 @@ final class RequestTests: XCTestCase {
     // MARK: - OnComplete Configuration Tests
     
     func testOnCompleteConfiguration() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .onComplete { _ in }
         
         XCTAssertNotNil(request.onCompleteHandler)
     }
     
     func testOnCompletePreservesOtherConfiguration() {
-        let request = Request<GitHubUser>()
+        let request = Call<GitHubUser>()
             .path("/users/test")
             .method(.get)
             .timeout(60)
@@ -424,7 +424,7 @@ final class RequestTests: XCTestCase {
     // MARK: - Chaining Tests
     
     func testCompleteChaining() {
-        let request = Request<GitHubUser>()
+        let request = Call<GitHubUser>()
             .baseURL("https://api.github.com")
             .path("/users/octocat")
             .method(.get)
@@ -446,7 +446,7 @@ final class RequestTests: XCTestCase {
             let email: String
         }
         
-        let request = Request<GitHubUser>()
+        let request = Call<GitHubUser>()
             .path("/users")
             .method(.post)
             .body(CreateUser(name: "Test", email: "test@example.com"))
@@ -458,25 +458,25 @@ final class RequestTests: XCTestCase {
         if case .requestJSONEncodable = request.task {
             // Expected
         } else {
-            XCTFail("Expected requestJSONEncodable task")
+            XCTFail("Expected callJSONEncodable task")
         }
     }
     
     // MARK: - Static Factory Tests
     
     func testPlainRequestFactory() {
-        let request = Request.plain()
+        let request = Call.plain()
         
         XCTAssertEqual(request.method, .get)
         if case .requestPlain = request.task {
             // Expected
         } else {
-            XCTFail("Expected requestPlain task")
+            XCTFail("Expected callPlain task")
         }
     }
     
     func testRawRequestFactory() {
-        let request = Request.raw()
+        let request = Call.raw()
         
         XCTAssertEqual(request.method, .get)
     }
@@ -484,7 +484,7 @@ final class RequestTests: XCTestCase {
     // MARK: - TargetType Conformance Tests
     
     func testTargetTypeConformance() {
-        let request = Request<Empty>()
+        let request = Call<Empty>()
             .baseURL("https://api.example.com")
             .path("/test")
             .method(.post)
