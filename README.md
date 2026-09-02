@@ -29,7 +29,7 @@ Add Iris to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/example/Iris.git", from: "1.0.0")
+    .package(url: "https://github.com/reers/Iris.git", from: "1.0.0")
 ]
 ```
 
