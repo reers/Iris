@@ -80,12 +80,15 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// Custom base URL that overrides the global configuration.
     private var _baseURL: URL?
     
+    /// Service-scoped defaults applied between global configuration and request overrides.
+    var service: IrisService?
+    
     /// Custom sample response that overrides the default 200 + sampleData stub.
     private var _sampleResponseClosure: Endpoint.SampleResponseClosure?
     
     /// The per-request or globally configured base URL, if any.
     var configuredBaseURL: URL? {
-        _baseURL ?? Iris.configuration.baseURL
+        _baseURL ?? service?.baseURL ?? Iris.configuration.baseURL
     }
     
     /// Per-request timeout that overrides the global configuration.
@@ -96,7 +99,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// Uses the per-request timeout when set, otherwise `IrisConfiguration.defaultTimeout`
     /// (which defaults to 30 seconds).
     public var timeout: TimeInterval {
-        get { _timeout ?? Iris.configuration.defaultTimeout }
+        get { _timeout ?? service?.timeout ?? Iris.configuration.defaultTimeout }
         set { _timeout = newValue }
     }
     

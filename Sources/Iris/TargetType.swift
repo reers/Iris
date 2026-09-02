@@ -2,50 +2,28 @@
 //  TargetType.swift
 //  Iris
 //
-//  Defines the protocol for describing API endpoints.
-//  Based on Moya's TargetType protocol.
+//  Defines the protocol shape used by request targets.
 //
 
 import Foundation
 
-/// The protocol used to define the specifications necessary for a network request.
+/// The protocol used by Iris to expose request metadata to plugins and internal
+/// request-building code.
 ///
-/// `TargetType` serves as a blueprint for API endpoints, encapsulating all the
-/// information needed to construct a network request. Types conforming to this
-/// protocol describe what an API endpoint looks like.
-///
-/// While Iris provides the `Call` struct as the primary way to build requests
-/// using a chainable API, `TargetType` allows for enum-based API definitions
-/// similar to Moya's approach.
-///
-/// Example:
-/// ```swift
-/// enum UserAPI: TargetType {
-///     case getUser(id: Int)
-///     case createUser(name: String)
-///
-///     var baseURL: URL { URL(string: "https://api.example.com")! }
-///     var path: String {
-///         switch self {
-///         case .getUser(let id): return "/users/\(id)"
-///         case .createUser: return "/users"
-///         }
-///     }
-///     // ... other requirements
-/// }
-/// ```
+/// `Call` is the primary public API for creating and sending requests. For
+/// larger apps with multiple business domains, prefer `IrisService` plus
+/// `Call` factories instead of defining Moya-style enum targets.
 public protocol TargetType {
 
     /// The target's base `URL`.
     ///
-    /// This is the root URL for all requests made to this target.
-    /// The `path` property will be appended to this URL.
+    /// This is the root URL used when `path` is relative.
     var baseURL: URL { get }
 
-    /// The path to be appended to `baseURL` to form the full `URL`.
+    /// The request path.
     ///
-    /// This should not include a leading slash if `baseURL` doesn't have a trailing slash,
-    /// or vice versa, to avoid double slashes in the final URL.
+    /// Relative paths are resolved against `baseURL`. Absolute URLs can be used
+    /// directly by `Call` and do not need a base URL.
     var path: String { get }
 
     /// The HTTP method used in the request.

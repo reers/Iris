@@ -56,6 +56,24 @@ final class CallTests: XCTestCase {
         XCTAssertEqual(request.timeout, 10)
     }
     
+    func testServiceTimeoutOverridesConfiguration() {
+        Iris.configure(IrisConfiguration().timeout(45))
+        let service = IrisService(timeout: 15)
+        
+        let request = service.call(Empty.self)
+        
+        XCTAssertEqual(request.timeout, 15)
+    }
+    
+    func testRequestTimeoutOverridesServiceTimeout() {
+        let service = IrisService(timeout: 15)
+        
+        let request = service.call(Empty.self)
+            .timeout(5)
+        
+        XCTAssertEqual(request.timeout, 5)
+    }
+    
     func testDefaultValues() {
         let request = Call<Empty>()
         
@@ -90,6 +108,68 @@ final class CallTests: XCTestCase {
         
         XCTAssertEqual(request.headers?["Header1"], "value1")
         XCTAssertEqual(request.headers?["Header2"], "value2")
+    }
+    
+    func testServiceHeadersMergeBetweenGlobalAndRequestHeaders() async throws {
+        var capturedHeaders: [String: String] = [:]
+        StubURLProtocol.handler = { request in
+            capturedHeaders = request.allHTTPHeaderFields ?? [:]
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+        
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://global.example.com")
+                .headers([
+                    "X-Global": "global",
+                    "X-Shared": "global"
+                ])
+                .session(makeStubbedSession())
+        )
+        let service = IrisService(
+            headers: [
+                "X-Service": "service",
+                "X-Shared": "service"
+            ]
+        )
+        
+        _ = try await service.call(Empty.self)
+            .path("/headers")
+            .headers([
+                "X-Request": "request",
+                "X-Shared": "request"
+            ])
+            .fire()
+        
+        XCTAssertEqual(capturedHeaders["X-Global"], "global")
+        XCTAssertEqual(capturedHeaders["X-Service"], "service")
+        XCTAssertEqual(capturedHeaders["X-Request"], "request")
+        XCTAssertEqual(capturedHeaders["X-Shared"], "request")
+    }
+    
+    func testServiceBaseURLOverridesConfigurationBaseURL() {
+        Iris.configure(IrisConfiguration().baseURL("https://global.example.com"))
+        let service = IrisService(baseURL: URL(string: "https://service.example.com")!)
+        
+        let request = service.call(Empty.self)
+        
+        XCTAssertEqual(request.configuredBaseURL?.absoluteString, "https://service.example.com")
+    }
+    
+    func testRequestBaseURLOverridesServiceBaseURL() {
+        let service = IrisService(baseURL: URL(string: "https://service.example.com")!)
+        
+        let request = service.call(Empty.self)
+            .baseURL("https://request.example.com")
+        
+        XCTAssertEqual(request.configuredBaseURL?.absoluteString, "https://request.example.com")
     }
     
     func testAuthorizationHeader() {

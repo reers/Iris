@@ -9,14 +9,14 @@ A modern, type-safe networking library for Swift featuring async/await and a cha
 
 ## Overview
 
-Iris is a networking library built on top of [Alamofire](https://github.com/Alamofire/Alamofire) and [Moya](https://github.com/Moya/Moya). It provides a clean, chainable API for building and executing network requests with full async/await support.
+Iris is a networking library built on top of [Alamofire](https://github.com/Alamofire/Alamofire) and inspired by [Moya](https://github.com/Moya/Moya). It provides a clean, chainable API for building and executing network requests with full async/await support.
 
 ### Key Features
 
 - **Chainable API**: Build requests using a fluent, chainable syntax
 - **Type-Safe**: Generic response types ensure compile-time safety
 - **Async/Await**: Modern Swift concurrency support out of the box
-- **Configurable**: Global and per-request configuration options
+- **Configurable**: Global, service-scoped, and per-request configuration options
 - **Plugin System**: Intercept and modify requests/responses
 - **Stubbing**: First-class support for testing with stubbed responses
 - **Full-Featured**: Supports uploads, downloads, multipart form data, and more
@@ -126,6 +126,57 @@ if response.isSuccess {
 ```
 
 ## Request Configuration
+
+### Service-Scoped Defaults
+
+Use `IrisService` when different business domains use different base URLs or
+defaults. Calls created from a service inherit its configuration while still
+allowing per-request overrides.
+
+```swift
+// Global defaults for the main API.
+Iris.configure(
+    IrisConfiguration()
+        .baseURL("https://api.example.com")
+        .header("Accept", "application/json")
+        .timeout(30)
+)
+
+// Service defaults for a separate payment API.
+enum PaymentAPI {
+    static let service = IrisService(
+        baseURL: "https://pay.example.com",
+        headers: ["X-Business": "payment"],
+        timeout: 15
+    )
+    
+    static func order(id: String) -> Call<Order> {
+        service.call(Order.self)
+            .path("/orders/\(id)")
+            .method(.get)
+    }
+}
+
+// Uses the global base URL.
+let user = try await Call<User>()
+    .path("/users/me")
+    .fetch()
+
+// Uses the payment service base URL.
+let order = try await PaymentAPI.order(id: "123").fetch()
+
+// Per-request configuration still has the highest priority.
+let stagingOrder = try await PaymentAPI.order(id: "123")
+    .baseURL("https://pay-staging.example.com")
+    .timeout(5)
+    .fetch()
+```
+
+Configuration priority is:
+
+```text
+request > service > global > default
+```
 
 ### HTTP Methods
 
@@ -275,7 +326,7 @@ let user = try response.map(User.self, atKeyPath: "data.user")
 let filtered = try response.filterSuccessfulStatusCodes()
 ```
 
-## Global Configuration
+## Global and Service Configuration
 
 Configure Iris once at app startup:
 
@@ -301,6 +352,9 @@ Call<User>()
     .timeout(60)                                // Override timeout
     .decoder(customDecoder)                     // Override decoder
 ```
+
+For larger apps, use `IrisService` to group endpoints that share a different
+base URL, headers, or timeout without changing the global configuration.
 
 ## Plugins
 

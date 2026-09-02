@@ -112,6 +112,9 @@ public struct Iris {
         
         // 3. Merge default headers
         var headers = configuration.defaultHeaders
+        if let serviceHeaders = request.service?.headers {
+            headers.merge(serviceHeaders) { _, new in new }
+        }
         if let requestHeaders = request.headers {
             headers.merge(requestHeaders) { _, new in new }
         }
