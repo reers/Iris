@@ -310,6 +310,89 @@ final class PluginTests: XCTestCase {
             XCTFail("Expected success result")
         }
     }
+    
+    // MARK: - Failure Lifecycle Tests
+    
+    func testPluginsReceiveTransportFailure() async {
+        StubURLProtocol.handler = { _ in
+            throw URLError(.notConnectedToInternet)
+        }
+        defer { StubURLProtocol.reset() }
+        
+        let plugin = TestingPlugin()
+        Iris.configure(
+            IrisConfiguration()
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+        
+        do {
+            _ = try await Call<Empty>()
+                .baseURL("https://example.com")
+                .path("/")
+                .fire()
+            XCTFail("Expected the request to fail")
+        } catch {
+            XCTAssertEqual(plugin.willSendCalledCount, 1)
+            XCTAssertEqual(plugin.didReceiveCalledCount, 1)
+            XCTAssertEqual(plugin.processCalledCount, 1)
+            
+            if case .failure(.underlying) = plugin.result {
+                // Expected
+            } else {
+                XCTFail("Plugin should receive an underlying failure, got \(String(describing: plugin.result))")
+            }
+            
+            guard let irisError = error as? IrisError, case .underlying = irisError else {
+                XCTFail("Caller should receive an underlying error, got \(error)")
+                return
+            }
+        }
+    }
+    
+    func testValidatedHTTPErrorIsStatusCodeAndReachesPlugins() async {
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 404,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        defer { StubURLProtocol.reset() }
+        
+        let plugin = TestingPlugin()
+        Iris.configure(
+            IrisConfiguration()
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+        
+        do {
+            _ = try await Call<Empty>()
+                .baseURL("https://example.com")
+                .path("/missing")
+                .validateSuccessCodes()
+                .fire()
+            XCTFail("Expected the request to fail")
+        } catch {
+            XCTAssertEqual(plugin.didReceiveCalledCount, 1)
+            XCTAssertEqual(plugin.processCalledCount, 1)
+            
+            if case .failure(.statusCode(let response)) = plugin.result {
+                XCTAssertEqual(response.statusCode, 404)
+            } else {
+                XCTFail("Plugin should receive a statusCode failure, got \(String(describing: plugin.result))")
+            }
+            
+            guard let irisError = error as? IrisError, case .statusCode(let response) = irisError else {
+                XCTFail("Caller should receive a statusCode error, got \(error)")
+                return
+            }
+            XCTAssertEqual(response.statusCode, 404)
+        }
+    }
 }
 
 // MARK: - Mock CallType

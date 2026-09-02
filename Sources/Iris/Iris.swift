@@ -94,105 +94,32 @@ public struct Iris {
             }
         )
         
-        // 5. Execute request based on task type
-        let rawResponse: RawResponse
+        // 5. Execute request based on task type. Network methods return Result
+        // so failures still flow through plugin didReceive/process.
+        let networkResult: Result<RawResponse, IrisError>
         
         switch request.task {
         case .uploadFile(let fileURL):
-            rawResponse = try await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, request: request)
+            networkResult = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, request: request)
             
         case .uploadMultipartFormData(let formData):
-            rawResponse = try await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request)
+            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request)
             
         case .uploadCompositeMultipartFormData(let formData, _):
-            rawResponse = try await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request)
+            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request)
             
         case .downloadDestination(let destination):
-            rawResponse = try await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request)
+            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request)
             
         case .downloadParameters(_, _, let destination):
-            rawResponse = try await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request)
+            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request)
             
         default:
-            rawResponse = try await performDataRequest(urlRequest, interceptor: interceptor, request: request)
+            networkResult = await performDataRequest(urlRequest, interceptor: interceptor, request: request)
         }
         
-        // 6. Notify plugins of response
-        let result: Result<RawResponse, IrisError> = .success(rawResponse)
-        configuration.plugins.forEach { $0.didReceive(result, target: request) }
-        
-        // 7. Apply plugin processing
-        var processedResult = result
-        for plugin in configuration.plugins {
-            processedResult = plugin.process(processedResult, target: request)
-        }
-        
-        // 8. Decode and return
-        switch processedResult {
-        case .success(let rawResponse):
-            do {
-                let model = try decodeModel(Model.self, from: rawResponse, using: request.decoder)
-                
-                // Call onComplete handler with decoded response
-                if let onCompleteHandler = request.onCompleteHandler {
-                    let afResponse = DataResponse<Model, AFError>(
-                        request: rawResponse.request,
-                        response: rawResponse.response,
-                        data: rawResponse.data,
-                        metrics: nil,
-                        serializationDuration: 0,
-                        result: .success(model)
-                    )
-                    onCompleteHandler(afResponse)
-                }
-                
-                return Response(
-                    model: model,
-                    statusCode: rawResponse.statusCode,
-                    data: rawResponse.data,
-                    request: rawResponse.request,
-                    response: rawResponse.response
-                )
-            } catch {
-                // Call onComplete handler with decoding error
-                if let onCompleteHandler = request.onCompleteHandler {
-                    let afError = AFError.responseSerializationFailed(reason: .decodingFailed(error: error))
-                    let afResponse = DataResponse<Model, AFError>(
-                        request: rawResponse.request,
-                        response: rawResponse.response,
-                        data: rawResponse.data,
-                        metrics: nil,
-                        serializationDuration: 0,
-                        result: .failure(afError)
-                    )
-                    onCompleteHandler(afResponse)
-                }
-                throw error
-            }
-        case .failure(let error):
-            // Call onComplete handler with failure
-            if let onCompleteHandler = request.onCompleteHandler {
-                let afError: AFError
-                switch error {
-                case .underlying(let underlying, _):
-                    afError = underlying as? AFError ?? AFError.sessionTaskFailed(error: underlying)
-                case .statusCode(let response):
-                    afError = AFError.responseValidationFailed(reason: .unacceptableStatusCode(code: response.statusCode))
-                default:
-                    afError = AFError.sessionTaskFailed(error: error)
-                }
-                let afResponse = DataResponse<Model, AFError>(
-                    request: nil,
-                    response: nil,
-                    data: nil,
-                    metrics: nil,
-                    serializationDuration: 0,
-                    result: .failure(afError)
-                )
-                onCompleteHandler(afResponse)
-            }
-            throw error
-        }
+        // 6-8. Notify plugins, process, then decode or throw
+        return try finish(networkResult, request: request)
     }
     
     /// Decodes the response data into the specified model type.
@@ -217,6 +144,151 @@ public struct Iris {
         return try rawResponse.map(Model.self, using: decoder)
     }
     
+    /// Notifies plugins, applies `process`, then decodes or throws.
+    ///
+    /// Both success and failure results pass through `didReceive` and `process`
+    /// so plugins can log errors, hide activity indicators, or recover failures.
+    private static func finish<Model: Decodable>(
+        _ result: Result<RawResponse, IrisError>,
+        request: Call<Model>
+    ) throws -> Response<Model> {
+        configuration.plugins.forEach { $0.didReceive(result, target: request) }
+        
+        var processedResult = result
+        for plugin in configuration.plugins {
+            processedResult = plugin.process(processedResult, target: request)
+        }
+        
+        switch processedResult {
+        case .success(let rawResponse):
+            do {
+                let model = try decodeModel(Model.self, from: rawResponse, using: request.decoder)
+                
+                if let onCompleteHandler = request.onCompleteHandler {
+                    let afResponse = DataResponse<Model, AFError>(
+                        request: rawResponse.request,
+                        response: rawResponse.response,
+                        data: rawResponse.data,
+                        metrics: nil,
+                        serializationDuration: 0,
+                        result: .success(model)
+                    )
+                    onCompleteHandler(afResponse)
+                }
+                
+                return Response(
+                    model: model,
+                    statusCode: rawResponse.statusCode,
+                    data: rawResponse.data,
+                    request: rawResponse.request,
+                    response: rawResponse.response
+                )
+            } catch {
+                if let onCompleteHandler = request.onCompleteHandler {
+                    let afError = AFError.responseSerializationFailed(reason: .decodingFailed(error: error))
+                    let afResponse = DataResponse<Model, AFError>(
+                        request: rawResponse.request,
+                        response: rawResponse.response,
+                        data: rawResponse.data,
+                        metrics: nil,
+                        serializationDuration: 0,
+                        result: .failure(afError)
+                    )
+                    onCompleteHandler(afResponse)
+                }
+                throw error
+            }
+        case .failure(let error):
+            if let onCompleteHandler = request.onCompleteHandler {
+                let afError: AFError
+                switch error {
+                case .underlying(let underlying, _):
+                    afError = underlying as? AFError ?? AFError.sessionTaskFailed(error: underlying)
+                case .statusCode(let response):
+                    afError = AFError.responseValidationFailed(reason: .unacceptableStatusCode(code: response.statusCode))
+                default:
+                    afError = AFError.sessionTaskFailed(error: error)
+                }
+                let raw = error.response
+                let afResponse = DataResponse<Model, AFError>(
+                    request: raw?.request,
+                    response: raw?.response,
+                    data: raw?.data,
+                    metrics: nil,
+                    serializationDuration: 0,
+                    result: .failure(afError)
+                )
+                onCompleteHandler(afResponse)
+            }
+            throw error
+        }
+    }
+    
+    /// Maps an Alamofire callback into a plugin-facing result.
+    ///
+    /// An HTTP response with a transport/validation error becomes `.statusCode`.
+    /// A failure with no HTTP response (timeout, DNS, connectivity) becomes `.underlying`.
+    static func mapNetworkResult(
+        data: Data,
+        request: URLRequest?,
+        response: HTTPURLResponse?,
+        error: Error?
+    ) -> Result<RawResponse, IrisError> {
+        let rawResponse = RawResponse(
+            statusCode: response?.statusCode ?? 0,
+            data: data,
+            request: request,
+            response: response
+        )
+        
+        guard let error else {
+            return .success(rawResponse)
+        }
+        
+        if response != nil {
+            return .failure(.statusCode(rawResponse))
+        }
+        return .failure(.underlying(error, rawResponse))
+    }
+    
+    private static func mapDataResponse(_ afResponse: AFDataResponse<Data>) -> Result<RawResponse, IrisError> {
+        switch afResponse.result {
+        case .success(let data):
+            return mapNetworkResult(
+                data: data,
+                request: afResponse.request,
+                response: afResponse.response,
+                error: nil
+            )
+        case .failure(let error):
+            return mapNetworkResult(
+                data: afResponse.data ?? Data(),
+                request: afResponse.request,
+                response: afResponse.response,
+                error: error
+            )
+        }
+    }
+    
+    private static func mapDownloadResponse(_ afResponse: DownloadResponse<Data, AFError>) -> Result<RawResponse, IrisError> {
+        switch afResponse.result {
+        case .success(let data):
+            return mapNetworkResult(
+                data: data,
+                request: afResponse.request,
+                response: afResponse.response,
+                error: nil
+            )
+        case .failure(let error):
+            return mapNetworkResult(
+                data: afResponse.resumeData ?? Data(),
+                request: afResponse.request,
+                response: afResponse.response,
+                error: error
+            )
+        }
+    }
+    
     /// Creates an `Endpoint` from the given request.
     ///
     /// - Parameter request: The request to convert.
@@ -239,14 +311,13 @@ public struct Iris {
     ///   - urlRequest: The URL request to execute.
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
-    /// - Returns: A `RawResponse` containing the response data.
-    /// - Throws: `IrisError` if the request fails.
+    /// - Returns: A result containing the response data or an `IrisError`.
     private static func performDataRequest<Model: Decodable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
         request: Call<Model>
-    ) async throws -> RawResponse {
-        try await withCheckedThrowingContinuation { continuation in
+    ) async -> Result<RawResponse, IrisError> {
+        await withCheckedContinuation { continuation in
             let validationCodes = request.validationType.statusCodes
             var afRequest = configuration.session.request(urlRequest, interceptor: interceptor)
             
@@ -255,30 +326,7 @@ public struct Iris {
             }
             
             afRequest.responseData { afResponse in
-                switch afResponse.result {
-                case .success(let data):
-                    let response = RawResponse(
-                        statusCode: afResponse.response?.statusCode ?? 0,
-                        data: data,
-                        request: afResponse.request,
-                        response: afResponse.response
-                    )
-                    continuation.resume(returning: response)
-                    
-                case .failure(let error):
-                    let response = RawResponse(
-                        statusCode: afResponse.response?.statusCode ?? 0,
-                        data: afResponse.data ?? Data(),
-                        request: afResponse.request,
-                        response: afResponse.response
-                    )
-                    
-                    if afResponse.response != nil {
-                        continuation.resume(throwing: IrisError.statusCode(response))
-                    } else {
-                        continuation.resume(throwing: IrisError.underlying(error, response))
-                    }
-                }
+                continuation.resume(returning: mapDataResponse(afResponse))
             }
         }
     }
@@ -290,15 +338,14 @@ public struct Iris {
     ///   - fileURL: The local file URL to upload.
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
-    /// - Returns: A `RawResponse` containing the response data.
-    /// - Throws: `IrisError` if the upload fails.
+    /// - Returns: A result containing the response data or an `IrisError`.
     private static func performUploadFile<Model: Decodable>(
         _ urlRequest: URLRequest,
         fileURL: URL,
         interceptor: IrisCallInterceptor,
         request: Call<Model>
-    ) async throws -> RawResponse {
-        try await withCheckedThrowingContinuation { continuation in
+    ) async -> Result<RawResponse, IrisError> {
+        await withCheckedContinuation { continuation in
             let validationCodes = request.validationType.statusCodes
             var afRequest = configuration.session.upload(fileURL, with: urlRequest, interceptor: interceptor)
             
@@ -307,25 +354,7 @@ public struct Iris {
             }
             
             afRequest.responseData { afResponse in
-                switch afResponse.result {
-                case .success(let data):
-                    let response = RawResponse(
-                        statusCode: afResponse.response?.statusCode ?? 0,
-                        data: data,
-                        request: afResponse.request,
-                        response: afResponse.response
-                    )
-                    continuation.resume(returning: response)
-                    
-                case .failure(let error):
-                    let response = RawResponse(
-                        statusCode: afResponse.response?.statusCode ?? 0,
-                        data: afResponse.data ?? Data(),
-                        request: afResponse.request,
-                        response: afResponse.response
-                    )
-                    continuation.resume(throwing: IrisError.underlying(error, response))
-                }
+                continuation.resume(returning: mapDataResponse(afResponse))
             }
         }
     }
@@ -337,15 +366,14 @@ public struct Iris {
     ///   - formData: The multipart form data to upload.
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
-    /// - Returns: A `RawResponse` containing the response data.
-    /// - Throws: `IrisError` if the upload fails.
+    /// - Returns: A result containing the response data or an `IrisError`.
     private static func performUploadMultipart<Model: Decodable>(
         _ urlRequest: URLRequest,
         formData: MultipartFormData,
         interceptor: IrisCallInterceptor,
         request: Call<Model>
-    ) async throws -> RawResponse {
-        try await withCheckedThrowingContinuation { continuation in
+    ) async -> Result<RawResponse, IrisError> {
+        await withCheckedContinuation { continuation in
             let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
             afFormData.applyMoyaMultipartFormData(formData)
             
@@ -357,25 +385,7 @@ public struct Iris {
             }
             
             afRequest.responseData { afResponse in
-                switch afResponse.result {
-                case .success(let data):
-                    let response = RawResponse(
-                        statusCode: afResponse.response?.statusCode ?? 0,
-                        data: data,
-                        request: afResponse.request,
-                        response: afResponse.response
-                    )
-                    continuation.resume(returning: response)
-                    
-                case .failure(let error):
-                    let response = RawResponse(
-                        statusCode: afResponse.response?.statusCode ?? 0,
-                        data: afResponse.data ?? Data(),
-                        request: afResponse.request,
-                        response: afResponse.response
-                    )
-                    continuation.resume(throwing: IrisError.underlying(error, response))
-                }
+                continuation.resume(returning: mapDataResponse(afResponse))
             }
         }
     }
@@ -387,15 +397,14 @@ public struct Iris {
     ///   - destination: The closure determining where to save the downloaded file.
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
-    /// - Returns: A `RawResponse` containing the response data.
-    /// - Throws: `IrisError` if the download fails.
+    /// - Returns: A result containing the response data or an `IrisError`.
     private static func performDownload<Model: Decodable>(
         _ urlRequest: URLRequest,
         destination: @escaping DownloadDestination,
         interceptor: IrisCallInterceptor,
         request: Call<Model>
-    ) async throws -> RawResponse {
-        try await withCheckedThrowingContinuation { continuation in
+    ) async -> Result<RawResponse, IrisError> {
+        await withCheckedContinuation { continuation in
             let validationCodes = request.validationType.statusCodes
             var afRequest = configuration.session.download(urlRequest, interceptor: interceptor, to: destination)
             
@@ -404,25 +413,7 @@ public struct Iris {
             }
             
             afRequest.responseData { afResponse in
-                switch afResponse.result {
-                case .success(let data):
-                    let response = RawResponse(
-                        statusCode: afResponse.response?.statusCode ?? 0,
-                        data: data,
-                        request: afResponse.request,
-                        response: afResponse.response
-                    )
-                    continuation.resume(returning: response)
-                    
-                case .failure(let error):
-                    let response = RawResponse(
-                        statusCode: afResponse.response?.statusCode ?? 0,
-                        data: afResponse.resumeData ?? Data(),
-                        request: afResponse.request,
-                        response: afResponse.response
-                    )
-                    continuation.resume(throwing: IrisError.underlying(error, response))
-                }
+                continuation.resume(returning: mapDownloadResponse(afResponse))
             }
         }
     }
@@ -464,83 +455,10 @@ public struct Iris {
             response: nil
         )
         
-        // Notify plugins
         let callType = CallTypeWrapper(request: nil)
         configuration.plugins.forEach { $0.willSend(callType, target: request) }
-        let result: Result<RawResponse, IrisError> = .success(rawResponse)
-        configuration.plugins.forEach { $0.didReceive(result, target: request) }
         
-        // Apply plugin processing
-        var processedResult = result
-        for plugin in configuration.plugins {
-            processedResult = plugin.process(processedResult, target: request)
-        }
-        
-        switch processedResult {
-        case .success(let rawResponse):
-            do {
-                let model = try decodeModel(Model.self, from: rawResponse, using: request.decoder)
-                
-                // Call onComplete handler with decoded response
-                if let onCompleteHandler = request.onCompleteHandler {
-                    let afResponse = DataResponse<Model, AFError>(
-                        request: rawResponse.request,
-                        response: rawResponse.response,
-                        data: rawResponse.data,
-                        metrics: nil,
-                        serializationDuration: 0,
-                        result: .success(model)
-                    )
-                    onCompleteHandler(afResponse)
-                }
-                
-                return Response(
-                    model: model,
-                    statusCode: rawResponse.statusCode,
-                    data: rawResponse.data,
-                    request: rawResponse.request,
-                    response: rawResponse.response
-                )
-            } catch {
-                // Call onComplete handler with decoding error
-                if let onCompleteHandler = request.onCompleteHandler {
-                    let afError = AFError.responseSerializationFailed(reason: .decodingFailed(error: error))
-                    let afResponse = DataResponse<Model, AFError>(
-                        request: rawResponse.request,
-                        response: rawResponse.response,
-                        data: rawResponse.data,
-                        metrics: nil,
-                        serializationDuration: 0,
-                        result: .failure(afError)
-                    )
-                    onCompleteHandler(afResponse)
-                }
-                throw error
-            }
-        case .failure(let error):
-            // Call onComplete handler with failure
-            if let onCompleteHandler = request.onCompleteHandler {
-                let afError: AFError
-                switch error {
-                case .underlying(let underlying, _):
-                    afError = underlying as? AFError ?? AFError.sessionTaskFailed(error: underlying)
-                case .statusCode(let response):
-                    afError = AFError.responseValidationFailed(reason: .unacceptableStatusCode(code: response.statusCode))
-                default:
-                    afError = AFError.sessionTaskFailed(error: error)
-                }
-                let afResponse = DataResponse<Model, AFError>(
-                    request: nil,
-                    response: nil,
-                    data: nil,
-                    metrics: nil,
-                    serializationDuration: 0,
-                    result: .failure(afError)
-                )
-                onCompleteHandler(afResponse)
-            }
-            throw error
-        }
+        return try finish(.success(rawResponse), request: request)
     }
 }
 

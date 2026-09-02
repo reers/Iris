@@ -223,4 +223,55 @@ final class IrisErrorTests: XCTestCase {
         let error = IrisError.requestMapping("http://www.example.com")
         XCTAssertEqual(error.errorDescription, "Failed to map Endpoint to a URLRequest.")
     }
+    
+    // MARK: - Network Result Mapping Tests
+    
+    func testHTTPErrorMapsToStatusCode() {
+        let url = URL(string: "https://example.com")!
+        let http = HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)
+        let result = Iris.mapNetworkResult(
+            data: Data(),
+            request: nil,
+            response: http,
+            error: URLError(.badServerResponse)
+        )
+        
+        if case .failure(.statusCode(let mapped)) = result {
+            XCTAssertEqual(mapped.statusCode, 404)
+        } else {
+            XCTFail("Expected statusCode error, got \(result)")
+        }
+    }
+    
+    func testTransportErrorMapsToUnderlying() {
+        let result = Iris.mapNetworkResult(
+            data: Data(),
+            request: nil,
+            response: nil,
+            error: URLError(.notConnectedToInternet)
+        )
+        
+        if case .failure(.underlying) = result {
+            // Expected
+        } else {
+            XCTFail("Expected underlying error, got \(result)")
+        }
+    }
+    
+    func testSuccessfulHTTPResponseMapsToSuccess() {
+        let url = URL(string: "https://example.com")!
+        let http = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)
+        let result = Iris.mapNetworkResult(
+            data: Data(),
+            request: nil,
+            response: http,
+            error: nil
+        )
+        
+        if case .success(let mapped) = result {
+            XCTAssertEqual(mapped.statusCode, 200)
+        } else {
+            XCTFail("Expected success, got \(result)")
+        }
+    }
 }
