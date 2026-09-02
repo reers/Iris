@@ -300,6 +300,23 @@ final class EndpointTests: XCTestCase {
         XCTAssertEqual(request.httpMethod, newEncodedRequest?.httpMethod)
     }
     
+    func testRequestCompositeParametersThrowsForNonHTTPBodyURLEncoding() {
+        let endpoint = simpleGitHubEndpoint.replacing(
+            task: .requestCompositeParameters(
+                bodyParameters: ["Nemesis": "Harvey"],
+                bodyEncoding: URLEncoding.queryString,
+                urlParameters: ["Harvey": "Nemesis"]
+            )
+        )
+        
+        XCTAssertThrowsError(try endpoint.urlRequest()) { error in
+            guard case IrisError.parameterEncoding = error else {
+                XCTFail("Expected parameterEncoding error, got \(error)")
+                return
+            }
+        }
+    }
+    
     // MARK: - Task: uploadCompositeMultipartFormData Tests
     
     func testUploadCompositeMultipartFormDataUpdatesURL() throws {
