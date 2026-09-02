@@ -37,6 +37,56 @@ final class StubTests: XCTestCase {
         XCTAssertEqual(response.model?.id, 123)
     }
     
+    func testStubCanReturnCustomStatusCode() async throws {
+        let sampleData = "{\"login\": \"created\", \"id\": 201}".data(using: .utf8)!
+        
+        let response = try await Call<GitHubUser>()
+            .path("/users/created")
+            .stub(statusCode: 201, data: sampleData)
+            .fire()
+        
+        XCTAssertEqual(response.statusCode, 201)
+        XCTAssertEqual(response.model?.login, "created")
+    }
+    
+    func testStubValidationFailsForCustomStatusCode() async {
+        let sampleData = "{\"message\": \"missing\"}".data(using: .utf8)!
+        
+        do {
+            _ = try await Call<Empty>()
+                .path("/users/missing")
+                .validateSuccessCodes()
+                .stub(statusCode: 404, data: sampleData)
+                .fire()
+            XCTFail("Expected statusCode error")
+        } catch {
+            guard let irisError = error as? IrisError, case .statusCode(let response) = irisError else {
+                XCTFail("Expected statusCode error, got \(error)")
+                return
+            }
+            XCTAssertEqual(response.statusCode, 404)
+            XCTAssertEqual(response.data, sampleData)
+        }
+    }
+    
+    func testStubCanReturnNetworkError() async {
+        let networkError = NSError(domain: "Stub", code: -1009)
+        
+        do {
+            _ = try await Call<Empty>()
+                .path("/users/offline")
+                .stub(error: networkError)
+                .fire()
+            XCTFail("Expected underlying error")
+        } catch {
+            guard let irisError = error as? IrisError, case .underlying(let underlying, nil) = irisError else {
+                XCTFail("Expected underlying error without response, got \(error)")
+                return
+            }
+            XCTAssertEqual((underlying as NSError).domain, "Stub")
+        }
+    }
+    
     func testStubFromEncodable() async throws {
         let user = GitHubUser(login: "stubuser", id: 456)
         

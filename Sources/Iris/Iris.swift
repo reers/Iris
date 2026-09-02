@@ -317,7 +317,7 @@ public struct Iris {
         
         return Endpoint(
             url: url,
-            sampleResponseClosure: { .networkResponse(200, request.sampleData) },
+            sampleResponseClosure: request.sampleResponseClosure,
             method: request.method,
             task: request.task,
             httpHeaderFields: request.headers
@@ -466,18 +466,37 @@ public struct Iris {
             try await _Concurrency.Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
         
-        // Create RawResponse
-        let rawResponse = RawResponse(
-            statusCode: 200,
-            data: request.sampleData,
-            request: nil,
-            response: nil
-        )
-        
         let callType = CallTypeWrapper(request: nil)
         configuration.plugins.forEach { $0.willSend(callType, target: request) }
         
-        return try finish(.success(rawResponse), request: request)
+        let result: Result<RawResponse, IrisError>
+        switch request.sampleResponseClosure() {
+        case .networkResponse(let statusCode, let data):
+            let rawResponse = RawResponse(statusCode: statusCode, data: data)
+            if request.validationType.statusCodes.isEmpty || request.validationType.statusCodes.contains(statusCode) {
+                result = .success(rawResponse)
+            } else {
+                result = .failure(.statusCode(rawResponse))
+            }
+            
+        case .response(let response, let data):
+            let rawResponse = RawResponse(
+                statusCode: response.statusCode,
+                data: data,
+                request: nil,
+                response: response
+            )
+            if request.validationType.statusCodes.isEmpty || request.validationType.statusCodes.contains(response.statusCode) {
+                result = .success(rawResponse)
+            } else {
+                result = .failure(.statusCode(rawResponse))
+            }
+            
+        case .networkError(let error):
+            result = .failure(.underlying(error, nil))
+        }
+        
+        return try finish(result, request: request)
     }
 }
 

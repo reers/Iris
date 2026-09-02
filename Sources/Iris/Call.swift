@@ -70,10 +70,18 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// Sample data for stubbing during testing.
     public var sampleData: Data = Data()
     
+    /// The sample response returned in stub mode.
+    var sampleResponseClosure: Endpoint.SampleResponseClosure {
+        _sampleResponseClosure ?? { .networkResponse(200, sampleData) }
+    }
+    
     // MARK: - Iris Extended Properties
     
     /// Custom base URL that overrides the global configuration.
     private var _baseURL: URL?
+    
+    /// Custom sample response that overrides the default 200 + sampleData stub.
+    private var _sampleResponseClosure: Endpoint.SampleResponseClosure?
     
     /// The per-request or globally configured base URL, if any.
     var configuredBaseURL: URL? {
@@ -486,6 +494,43 @@ public struct Call<ResponseType: Decodable>: TargetType {
     public func stub(_ data: Data) -> Call<ResponseType> {
         var request = self
         request.sampleData = data
+        request._sampleResponseClosure = { .networkResponse(200, data) }
+        return request
+    }
+    
+    /// Sets stub data with a custom HTTP status code.
+    ///
+    /// - Parameters:
+    ///   - statusCode: The HTTP status code to return when stubbing.
+    ///   - data: The data to return when stubbing.
+    /// - Returns: A new call with the stub response.
+    public func stub(statusCode: Int, data: Data) -> Call<ResponseType> {
+        var request = self
+        request.sampleData = data
+        request._sampleResponseClosure = { .networkResponse(statusCode, data) }
+        return request
+    }
+    
+    /// Sets a fully custom HTTP response for stubbing.
+    ///
+    /// - Parameters:
+    ///   - response: The HTTP response to return when stubbing.
+    ///   - data: The data to return when stubbing.
+    /// - Returns: A new call with the stub response.
+    public func stub(response: HTTPURLResponse, data: Data) -> Call<ResponseType> {
+        var request = self
+        request.sampleData = data
+        request._sampleResponseClosure = { .response(response, data) }
+        return request
+    }
+    
+    /// Sets a network error for stubbing.
+    ///
+    /// - Parameter error: The error to return when stubbing.
+    /// - Returns: A new call with the stub error.
+    public func stub(error: NSError) -> Call<ResponseType> {
+        var request = self
+        request._sampleResponseClosure = { .networkError(error) }
         return request
     }
     
@@ -496,9 +541,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - encoder: The encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
     /// - Returns: A new call with the encoded stub data.
     public func stub<T: Encodable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) -> Call<ResponseType> {
-        var request = self
-        request.sampleData = (try? encoder.encode(model)) ?? Data()
-        return request
+        stub((try? encoder.encode(model)) ?? Data())
     }
     
     /// Sets stub data from a string.
@@ -506,9 +549,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Parameter string: The string to use as stub data (encoded as UTF-8).
     /// - Returns: A new call with the string stub data.
     public func stub(_ string: String) -> Call<ResponseType> {
-        var request = self
-        request.sampleData = string.data(using: .utf8) ?? Data()
-        return request
+        stub(string.data(using: .utf8) ?? Data())
     }
     
     /// Sets the stub behavior, overriding the global configuration.
