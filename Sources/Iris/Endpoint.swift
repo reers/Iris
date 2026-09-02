@@ -62,7 +62,7 @@ open class Endpoint {
     /// The HTTP method for the request.
     public let method: Method
 
-    /// The `Task` for the request.
+    /// The `CallTask` for the request.
     ///
     /// This defines how the request body and parameters are configured.
     public let task: CallTask

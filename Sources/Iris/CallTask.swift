@@ -1,5 +1,5 @@
 //
-//  Task.swift
+//  CallTask.swift
 //  Iris
 //
 //  Defines the different types of HTTP tasks that can be performed.
@@ -10,7 +10,7 @@ import Foundation
 
 /// Represents an HTTP task to be performed.
 ///
-/// A `Task` describes how the body and parameters of an HTTP request should be
+/// A `CallTask` describes how the body and parameters of an HTTP request should be
 /// configured. Different task types support different use cases like plain requests,
 /// parameter encoding, file uploads, and downloads.
 ///
