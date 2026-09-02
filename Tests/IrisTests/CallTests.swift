@@ -351,6 +351,35 @@ final class CallTests: XCTestCase {
         XCTAssertEqual(request.baseURL.absoluteString, "https://local.example.com")
     }
     
+    func testResolveAbsolutePathDoesNotNeedBaseURL() throws {
+        let url = try Iris.resolveURL(baseURL: nil, path: "https://api.github.com/users/1")
+        
+        XCTAssertEqual(url.absoluteString, "https://api.github.com/users/1")
+    }
+    
+    func testResolveAbsolutePathIgnoresBaseURL() throws {
+        let base = URL(string: "https://api.example.com")!
+        let url = try Iris.resolveURL(baseURL: base, path: "https://api.github.com/users/1")
+        
+        XCTAssertEqual(url.absoluteString, "https://api.github.com/users/1")
+    }
+    
+    func testResolveRelativePathUsesBaseURL() throws {
+        let base = URL(string: "https://api.example.com")!
+        let url = try Iris.resolveURL(baseURL: base, path: "/users/1")
+        
+        XCTAssertEqual(url.absoluteString, "https://api.example.com/users/1")
+    }
+    
+    func testResolveRelativePathWithoutBaseURLThrows() {
+        XCTAssertThrowsError(try Iris.resolveURL(baseURL: nil, path: "/users/1")) { error in
+            guard case IrisError.requestMapping = error else {
+                XCTFail("Expected requestMapping, got \(error)")
+                return
+            }
+        }
+    }
+    
     // MARK: - Decoder Configuration Tests
     
     func testCustomDecoder() {

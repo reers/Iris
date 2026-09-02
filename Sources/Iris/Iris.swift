@@ -66,7 +66,7 @@ public struct Iris {
     /// - Throws: `IrisError` if any step in the request lifecycle fails.
     private static func performRequest<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
         // 1. Create Endpoint
-        let endpoint = createEndpoint(from: request)
+        let endpoint = try createEndpoint(from: request)
         
         // 2. Convert to URLRequest
         var urlRequest = try endpoint.urlRequest()
@@ -289,12 +289,31 @@ public struct Iris {
         }
     }
     
+    /// Resolves the final URL for a request path.
+    ///
+    /// Absolute paths are used directly. Relative paths are resolved against
+    /// the request's configured base URL.
+    static func resolveURL(baseURL: URL?, path: String) throws -> URL {
+        if let url = URL(string: path), url.scheme != nil, url.host != nil {
+            return url
+        }
+        
+        guard let baseURL,
+              let url = URL(string: path, relativeTo: baseURL)?.absoluteURL,
+              url.scheme != nil,
+              url.host != nil else {
+            throw IrisError.requestMapping(path)
+        }
+        
+        return url
+    }
+    
     /// Creates an `Endpoint` from the given request.
     ///
     /// - Parameter request: The request to convert.
     /// - Returns: An `Endpoint` representing the request.
-    private static func createEndpoint<Model: Decodable>(from request: Call<Model>) -> Endpoint {
-        let url = request.baseURL.appendingPathComponent(request.path).absoluteString
+    private static func createEndpoint<Model: Decodable>(from request: Call<Model>) throws -> Endpoint {
+        let url = try resolveURL(baseURL: request.configuredBaseURL, path: request.path).absoluteString
         
         return Endpoint(
             url: url,

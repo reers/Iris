@@ -46,7 +46,10 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// If not set explicitly, falls back to the global configuration's baseURL.
     public var baseURL: URL {
-        _baseURL ?? Iris.configuration.baseURL ?? URL(string: "https://example.com")!
+        guard let baseURL = configuredBaseURL else {
+            preconditionFailure("baseURL is required unless path is an absolute URL")
+        }
+        return baseURL
     }
     
     /// The path component to append to the base URL.
@@ -71,6 +74,11 @@ public struct Call<ResponseType: Decodable>: TargetType {
     
     /// Custom base URL that overrides the global configuration.
     private var _baseURL: URL?
+    
+    /// The per-request or globally configured base URL, if any.
+    var configuredBaseURL: URL? {
+        _baseURL ?? Iris.configuration.baseURL
+    }
     
     /// Per-request timeout that overrides the global configuration.
     private var _timeout: TimeInterval?
