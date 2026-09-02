@@ -114,8 +114,8 @@ extension Call {
 // Method 1: fetch() - Returns the decoded model directly
 let user = try await Call<User>.getUser(id: 123).fetch()
 
-// Method 2: fire() - Returns Response<Model> with metadata
-let response = try await Call<User>.getUser(id: 123).fire()
+// Method 2: send() - Returns Response<Model> with metadata
+let response = try await Call<User>.getUser(id: 123).send()
 print("Status: \(response.statusCode)")
 print("User: \(response.model.name)")
 
@@ -290,7 +290,7 @@ Call<User>()
 ### Response Properties
 
 ```swift
-let response = try await request.fire()
+let response = try await request.send()
 
 // Status information
 response.statusCode      // HTTP status code
@@ -310,7 +310,7 @@ response.response        // HTTPURLResponse
 ### Response Mapping
 
 ```swift
-let response = try await request.fire()
+let response = try await request.send()
 
 // Get the model
 let user = try response.unwrap()

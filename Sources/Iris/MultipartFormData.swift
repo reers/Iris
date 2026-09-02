@@ -35,7 +35,7 @@ import Alamofire
 ///     .path("/users/1/avatar")
 ///     .method(.post)
 ///     .upload(multipart: formData)
-///     .fire()
+///     .send()
 /// ```
 public struct MultipartFormData: Hashable {
 

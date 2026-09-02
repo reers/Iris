@@ -146,7 +146,7 @@ final class CallTests: XCTestCase {
                 "X-Request": "request",
                 "X-Shared": "request"
             ])
-            .fire()
+            .send()
         
         XCTAssertEqual(capturedHeaders["X-Global"], "global")
         XCTAssertEqual(capturedHeaders["X-Service"], "service")
@@ -610,7 +610,7 @@ final class CallTests: XCTestCase {
             try await Call<Empty>()
                 .baseURL("https://example.com")
                 .path("/slow")
-                .fire()
+                .send()
         }
         
         await fulfillment(of: [didStartUnderlyingRequest], timeout: 1)

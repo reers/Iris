@@ -75,7 +75,7 @@ public struct Iris {
     
     /// Sends a request and returns the decoded model directly.
     ///
-    /// This is a convenience method that unwraps the model from the response.
+    /// This is a convenience method that returns the decoded model from the response.
     /// Use this when you only need the decoded model and don't need access to
     /// response metadata like status codes or headers.
     ///
@@ -84,7 +84,7 @@ public struct Iris {
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
     public static func fetch<Model: Decodable>(_ request: Call<Model>) async throws -> Model {
         let response = try await send(request)
-        return try response.unwrap()
+        return response.model
     }
     
     // MARK: - Private Methods

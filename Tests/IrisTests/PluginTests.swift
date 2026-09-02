@@ -330,7 +330,7 @@ final class PluginTests: XCTestCase {
             _ = try await Call<Empty>()
                 .baseURL("https://example.com")
                 .path("/")
-                .fire()
+                .send()
             XCTFail("Expected the request to fail")
         } catch {
             XCTAssertEqual(plugin.willSendCalledCount, 1)
@@ -374,7 +374,7 @@ final class PluginTests: XCTestCase {
                 .baseURL("https://example.com")
                 .path("/missing")
                 .validateSuccessCodes()
-                .fire()
+                .send()
             XCTFail("Expected the request to fail")
         } catch {
             XCTAssertEqual(plugin.didReceiveCalledCount, 1)

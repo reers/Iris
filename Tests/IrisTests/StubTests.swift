@@ -30,7 +30,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/testuser")
             .stub(sampleData)
-            .fire()
+            .send()
         
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(response.model.login, "testuser")
@@ -43,7 +43,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/created")
             .stub(statusCode: 201, data: sampleData)
-            .fire()
+            .send()
         
         XCTAssertEqual(response.statusCode, 201)
         XCTAssertEqual(response.model.login, "created")
@@ -57,7 +57,7 @@ final class StubTests: XCTestCase {
                 .path("/users/missing")
                 .validateSuccessCodes()
                 .stub(statusCode: 404, data: sampleData)
-                .fire()
+                .send()
             XCTFail("Expected statusCode error")
         } catch {
             guard let irisError = error as? IrisError, case .statusCode(let response) = irisError else {
@@ -76,7 +76,7 @@ final class StubTests: XCTestCase {
             _ = try await Call<Empty>()
                 .path("/users/offline")
                 .stub(error: networkError)
-                .fire()
+                .send()
             XCTFail("Expected underlying error")
         } catch {
             guard let irisError = error as? IrisError, case .underlying(let underlying, nil) = irisError else {
@@ -93,7 +93,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/stubuser")
             .stub(user)
-            .fire()
+            .send()
         
         XCTAssertEqual(response.model.login, "stubuser")
         XCTAssertEqual(response.model.id, 456)
@@ -103,7 +103,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/stringuser")
             .stub("{\"login\": \"stringuser\", \"id\": 789}")
-            .fire()
+            .send()
         
         XCTAssertEqual(response.model.login, "stringuser")
         XCTAssertEqual(response.model.id, 789)
@@ -119,7 +119,7 @@ final class StubTests: XCTestCase {
             .path("/users/delayed")
             .stub(GitHubUser(login: "delayed", id: 1))
             .stub(behavior: .delayed(delay))
-            .fire()
+            .send()
         
         let elapsedTime = Date().timeIntervalSince(startTime)
         
@@ -140,7 +140,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/globaldelayed")
             .stub(GitHubUser(login: "globaldelayed", id: 2))
-            .fire()
+            .send()
         
         let elapsedTime = Date().timeIntervalSince(startTime)
         
@@ -165,7 +165,7 @@ final class StubTests: XCTestCase {
             .path("/users/override")
             .stub(GitHubUser(login: "override", id: 3))
             .stub(behavior: .immediate)
-            .fire()
+            .send()
         
         let elapsedTime = Date().timeIntervalSince(startTime)
         
@@ -193,7 +193,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/propuser")
             .stub(sampleData)
-            .fire()
+            .send()
         
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertTrue(response.isSuccess)
@@ -210,7 +210,7 @@ final class StubTests: XCTestCase {
             .empty()
             .path("/ping")
             .stub(Data())
-            .fire()
+            .send()
         
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertTrue(response.isSuccess)
@@ -231,7 +231,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<[GitHubUser]>()
             .path("/users")
             .stub(sampleData)
-            .fire()
+            .send()
         
         XCTAssertEqual(response.model.count, 3)
         XCTAssertEqual(response.model[0].login, "user1")
@@ -254,7 +254,7 @@ final class StubTests: XCTestCase {
         _ = try await Call<GitHubUser>()
             .path("/users/plugintest")
             .stub(GitHubUser(login: "plugintest", id: 1))
-            .fire()
+            .send()
         
         XCTAssertEqual(plugin.willSendCalledCount, 1)
         XCTAssertEqual(plugin.didReceiveCalledCount, 1)
@@ -274,7 +274,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/modified")
             .stub(GitHubUser(login: "modified", id: 1))
-            .fire()
+            .send()
         
         // Plugin modifies status code to 201
         XCTAssertEqual(response.statusCode, 201)
@@ -286,7 +286,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/filter")
             .stub(GitHubUser(login: "filter", id: 1))
-            .fire()
+            .send()
         
         // Should not throw since status code is 200
         let filtered = try response.filterSuccessfulStatusCodes()
@@ -297,7 +297,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/json")
             .stub(GitHubUser(login: "json", id: 1))
-            .fire()
+            .send()
         
         let json = try response.mapJSON() as? [String: Any]
         XCTAssertEqual(json?["login"] as? String, "json")
@@ -308,7 +308,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/string")
             .stub("{\"login\": \"string\", \"id\": 1}")
-            .fire()
+            .send()
         
         let string = try response.mapString()
         XCTAssertTrue(string.contains("string"))
@@ -322,7 +322,7 @@ final class StubTests: XCTestCase {
             .method(.post)
             .body(["name": "newuser"])
             .stub(GitHubUser(login: "newuser", id: 999))
-            .fire()
+            .send()
         
         XCTAssertEqual(response.model.login, "newuser")
     }
@@ -333,7 +333,7 @@ final class StubTests: XCTestCase {
             .method(.put)
             .body(["name": "updateduser"])
             .stub(GitHubUser(login: "updateduser", id: 1))
-            .fire()
+            .send()
         
         XCTAssertEqual(response.model.login, "updateduser")
     }
@@ -343,7 +343,7 @@ final class StubTests: XCTestCase {
             .path("/users/1")
             .method(.delete)
             .stub(Data())
-            .fire()
+            .send()
         
         XCTAssertTrue(response.isSuccess)
     }
@@ -360,7 +360,7 @@ final class StubTests: XCTestCase {
             .path("/users/customdecoder")
             .stub(jsonData)
             .decoder(decoder)
-            .fire()
+            .send()
         
         XCTAssertEqual(response.model.login, "customdecoder")
     }
@@ -380,7 +380,7 @@ final class StubTests: XCTestCase {
                 }
                 expectation.fulfill()
             }
-            .fire()
+            .send()
         
         await fulfillment(of: [expectation], timeout: 1.0)
         
@@ -426,7 +426,7 @@ final class StubTests: XCTestCase {
                     }
                     expectation.fulfill()
                 }
-                .fire()
+                .send()
             XCTFail("Expected decoding to fail")
         } catch {
             // Expected
@@ -481,7 +481,7 @@ final class StubTests: XCTestCase {
                 receivedData.value = response.data
                 expectation.fulfill()
             }
-            .fire()
+            .send()
         
         await fulfillment(of: [expectation], timeout: 1.0)
         
@@ -508,7 +508,7 @@ final class StubTests: XCTestCase {
                 }
                 expectation.fulfill()
             }
-            .fire()
+            .send()
         
         await fulfillment(of: [expectation], timeout: 1.0)
         
@@ -531,7 +531,7 @@ final class StubTests: XCTestCase {
                 completedAt.value = Date()
                 expectation.fulfill()
             }
-            .fire()
+            .send()
         
         await fulfillment(of: [expectation], timeout: 1.0)
         

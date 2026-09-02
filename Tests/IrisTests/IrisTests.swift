@@ -100,10 +100,10 @@ final class IrisTests: XCTestCase {
     // MARK: - Response Tests
     
     func testResponse() async throws {
-        // fire() returns Response<User>
-        let response = try await Call<User>.getUserWithStub(id: 123).fire()
+        // send() returns Response<User>
+        let response = try await Call<User>.getUserWithStub(id: 123).send()
         
-        // model is non-optional on successful fire()
+        // model is non-optional on successful send()
         XCTAssertEqual(response.model.id, 123)
         XCTAssertEqual(response.model.name, "Stubbed User")
         
@@ -150,14 +150,14 @@ final class IrisTests: XCTestCase {
             .path("/ping")
             .stub(behavior: .immediate)
         
-        let response = try await request.fire()
+        let response = try await request.send()
         XCTAssertTrue(response.isSuccess)
     }
     
     // MARK: - Response Mapping Tests
     
     func testResponseMapping() async throws {
-        let response = try await Call<User>.getUserWithStub(id: 1).fire()
+        let response = try await Call<User>.getUserWithStub(id: 1).send()
         
         // Map to string
         let string = try response.mapString()
@@ -173,7 +173,7 @@ final class IrisTests: XCTestCase {
     }
     
     func testResponseConvenienceProperties() async throws {
-        let response = try await Call<User>.getUserWithStub(id: 1).fire()
+        let response = try await Call<User>.getUserWithStub(id: 1).send()
         
         // Test convenience properties
         XCTAssertTrue(response.isSuccess)
@@ -189,7 +189,7 @@ final class IrisTests: XCTestCase {
     // MARK: - HTTPResponse Tests
     
     func testHTTPResponse() async throws {
-        let response = try await Call<User>.getUserWithStub(id: 1).fire()
+        let response = try await Call<User>.getUserWithStub(id: 1).send()
         
         let httpResponse = response.httpResponse
         XCTAssertEqual(httpResponse.statusCode, 200)
@@ -210,7 +210,7 @@ final class IrisTests: XCTestCase {
             .method(.get)
             .stub("Half measures are as bad as nothing at all.".data(using: .utf8)!)
             .stub(behavior: .immediate)
-            .fire()
+            .send()
         
         let message = try response.mapString()
         XCTAssertEqual(message, "Half measures are as bad as nothing at all.")
@@ -220,7 +220,7 @@ final class IrisTests: XCTestCase {
         // Using GitHubAPI factory methods (demonstrates Iris's recommended API encapsulation)
         Iris.configure(IrisConfiguration().stub(.immediate))
         
-        let response = try await GitHubAPI.userProfile("ashfurrow").fire()
+        let response = try await GitHubAPI.userProfile("ashfurrow").send()
         
         XCTAssertEqual(response.model.login, "ashfurrow")
         XCTAssertEqual(response.model.id, 100)
@@ -233,7 +233,7 @@ final class IrisTests: XCTestCase {
             .path("/users/1")
             .validateSuccessCodes()
             .stub(User(id: 1, name: "Test"))
-            .fire()
+            .send()
         
         // Should succeed with 200
         XCTAssertEqual(response.statusCode, 200)
@@ -256,7 +256,7 @@ final class IrisTests: XCTestCase {
         _ = try await Call<User>()
             .path("/users/1")
             .stub(User(id: 1, name: "Test"))
-            .fire()
+            .send()
         
         // Both plugins should be called
         // Note: In stub mode, `prepare` is not called (no real URLRequest to prepare)
@@ -289,8 +289,8 @@ final class IrisTests: XCTestCase {
  
  ## Sending Requests
  
- // Method 1: fire() - Returns Response<Model>
- let response = try await Call<User>.getUser(id: 123).fire()
+ // Method 1: send() - Returns Response<Model>
+ let response = try await Call<User>.getUser(id: 123).send()
  let user = response.model
  let user = try response.unwrap()    // semantic alias for model
  
