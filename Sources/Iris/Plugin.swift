@@ -30,7 +30,7 @@ import Foundation
 ///         print("Sending request to: \(target.path)")
 ///     }
 ///
-///     func didReceive(_ result: Result<RawResponse, IrisError>, target: TargetType) {
+///     func didReceive(_ result: Result<HTTPResponse, IrisError>, target: TargetType) {
 ///         print("Received response for: \(target.path)")
 ///     }
 /// }
@@ -66,7 +66,7 @@ public protocol PluginType {
     /// - Parameters:
     ///   - result: The result of the network request.
     ///   - target: The target type that generated this request.
-    func didReceive(_ result: Result<RawResponse, IrisError>, target: TargetType)
+    func didReceive(_ result: Result<HTTPResponse, IrisError>, target: TargetType)
 
     /// Called to modify a result before completion.
     ///
@@ -77,7 +77,7 @@ public protocol PluginType {
     ///   - result: The result of the network request.
     ///   - target: The target type that generated this request.
     /// - Returns: The modified (or unmodified) result.
-    func process(_ result: Result<RawResponse, IrisError>, target: TargetType) -> Result<RawResponse, IrisError>
+    func process(_ result: Result<HTTPResponse, IrisError>, target: TargetType) -> Result<HTTPResponse, IrisError>
 }
 
 // MARK: - Default Implementations
@@ -91,10 +91,10 @@ public extension PluginType {
     func willSend(_ request: CallType, target: TargetType) { }
     
     /// Default implementation does nothing.
-    func didReceive(_ result: Result<RawResponse, IrisError>, target: TargetType) { }
+    func didReceive(_ result: Result<HTTPResponse, IrisError>, target: TargetType) { }
     
     /// Default implementation returns the result unchanged.
-    func process(_ result: Result<RawResponse, IrisError>, target: TargetType) -> Result<RawResponse, IrisError> { result }
+    func process(_ result: Result<HTTPResponse, IrisError>, target: TargetType) -> Result<HTTPResponse, IrisError> { result }
 }
 
 // MARK: - CallType

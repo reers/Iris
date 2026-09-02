@@ -10,12 +10,12 @@ import XCTest
 
 final class IrisErrorTests: XCTestCase {
     
-    var response: RawResponse!
+    var response: HTTPResponse!
     var underlyingError: NSError!
     
     override func setUp() {
         super.setUp()
-        response = RawResponse(statusCode: 200, data: Data(), request: nil, response: nil)
+        response = HTTPResponse(statusCode: 200, data: Data(), request: nil, response: nil)
         underlyingError = NSError(domain: "UnderlyingDomain", code: 200, userInfo: ["data": "some data"])
     }
     

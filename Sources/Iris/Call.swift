@@ -599,20 +599,10 @@ public extension Call where ResponseType == Empty {
     /// or is empty (e.g., DELETE requests).
     ///
     /// - Returns: A new call with `Empty` response type.
-    static func plain() -> Call<Empty> {
+    static func empty() -> Call<Empty> {
         Call<Empty>()
     }
-    
-    /// Creates a raw request (semantic alias for `plain()`).
-    ///
-    /// - Returns: A new call with `Raw` response type.
-    static func raw() -> Call<Raw> {
-        Call<Raw>()
-    }
 }
-
-/// Type alias for requests without a specific model type.
-public typealias RawCall = Call<Raw>
 
 // MARK: - Empty Response
 
@@ -620,9 +610,6 @@ public typealias RawCall = Call<Raw>
 ///
 /// Use `Empty` as the response type for requests that don't return a body
 /// or when you don't need to parse the response.
-///
-/// Also aliased as `Raw` for semantic clarity.
-public typealias Raw = Empty
 
 /// A type that accepts any JSON response without parsing.
 public struct Empty: Decodable {

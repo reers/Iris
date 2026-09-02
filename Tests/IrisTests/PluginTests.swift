@@ -35,11 +35,11 @@ final class PluginTests: XCTestCase {
         plugin.willSend(MockCallType(), target: target)
         
         // didReceive should not crash
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         plugin.didReceive(.success(response), target: target)
         
         // process should return the same result
-        let result: Result<RawResponse, IrisError> = .success(response)
+        let result: Result<HTTPResponse, IrisError> = .success(response)
         let processedResult = plugin.process(result, target: target)
         if case .success(let processedResponse) = processedResult {
             XCTAssertEqual(processedResponse.statusCode, 200)
@@ -81,7 +81,7 @@ final class PluginTests: XCTestCase {
     func testTestingPluginDidReceive() {
         let plugin = TestingPlugin()
         let target = Call<Empty>().path("/test")
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         
         plugin.didReceive(.success(response), target: target)
         
@@ -98,7 +98,7 @@ final class PluginTests: XCTestCase {
     func testTestingPluginProcess() {
         let plugin = TestingPlugin()
         let target = Call<Empty>().path("/test")
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         
         let processedResult = plugin.process(.success(response), target: target)
         
@@ -116,7 +116,7 @@ final class PluginTests: XCTestCase {
         let plugin = TestingPlugin()
         let target = Call<Empty>().path("/test")
         let request = URLRequest(url: URL(string: "https://example.com")!)
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         
         // Call all methods
         _ = plugin.prepare(request, target: target)
@@ -146,7 +146,7 @@ final class PluginTests: XCTestCase {
         let plugin = OrderTrackingPlugin()
         let request = URLRequest(url: URL(string: "https://example.com")!)
         let target = Call<Empty>().path("/test")
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         
         _ = plugin.prepare(request, target: target)
         plugin.willSend(MockCallType(), target: target)
@@ -173,7 +173,7 @@ final class PluginTests: XCTestCase {
     func testResponseModifyingPlugin() {
         let plugin = ResponseModifyingPlugin(newStatusCode: 201)
         let target = Call<Empty>().path("/test")
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         
         let processedResult = plugin.process(.success(response), target: target)
         
@@ -204,7 +204,7 @@ final class PluginTests: XCTestCase {
         let injectedError = IrisError.requestMapping("injected error")
         let plugin = ErrorInjectingPlugin(error: injectedError)
         let target = Call<Empty>().path("/test")
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         
         let processedResult = plugin.process(.success(response), target: target)
         
@@ -251,7 +251,7 @@ final class PluginTests: XCTestCase {
         }
         
         let target = Call<Empty>().path("/test")
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         plugin.didReceive(.success(response), target: target)
         
         XCTAssertTrue(endedCalled)
@@ -266,7 +266,7 @@ final class PluginTests: XCTestCase {
         
         let request = URLRequest(url: URL(string: "https://example.com")!)
         let target = Call<Empty>().path("/test")
-        _ = RawResponse(statusCode: 200, data: Data())
+        _ = HTTPResponse(statusCode: 200, data: Data())
         
         // Simulate plugin chain for prepare
         var modifiedRequest = request
@@ -297,9 +297,9 @@ final class PluginTests: XCTestCase {
         let plugin2 = ResponseModifyingPlugin(newStatusCode: 202)
         
         let target = Call<Empty>().path("/test")
-        let response = RawResponse(statusCode: 200, data: Data())
+        let response = HTTPResponse(statusCode: 200, data: Data())
         
-        var result: Result<RawResponse, IrisError> = .success(response)
+        var result: Result<HTTPResponse, IrisError> = .success(response)
         result = plugin1.process(result, target: target)
         result = plugin2.process(result, target: target)
         

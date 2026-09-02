@@ -20,7 +20,7 @@ final class TestingPlugin: PluginType {
     var request: (CallType, TargetType)?
     
     /// The last result passed to didReceive.
-    var result: Result<RawResponse, IrisError>?
+    var result: Result<HTTPResponse, IrisError>?
     
     /// Whether prepare was called before willSend.
     var didPrepare = false
@@ -52,17 +52,17 @@ final class TestingPlugin: PluginType {
         didPrepare = request.request?.allHTTPHeaderFields?["prepared"] == "yes"
     }
     
-    func didReceive(_ result: Result<RawResponse, IrisError>, target: TargetType) {
+    func didReceive(_ result: Result<HTTPResponse, IrisError>, target: TargetType) {
         didReceiveCalledCount += 1
         self.result = result
     }
     
-    func process(_ result: Result<RawResponse, IrisError>, target: TargetType) -> Result<RawResponse, IrisError> {
+    func process(_ result: Result<HTTPResponse, IrisError>, target: TargetType) -> Result<HTTPResponse, IrisError> {
         processCalledCount += 1
         var result = result
         
         if case .success(let response) = result {
-            let processedResponse = RawResponse(
+            let processedResponse = HTTPResponse(
                 statusCode: -1,
                 data: response.data,
                 request: response.request,
@@ -105,11 +105,11 @@ final class OrderTrackingPlugin: PluginType {
         callOrder.append("willSend")
     }
     
-    func didReceive(_ result: Result<RawResponse, IrisError>, target: TargetType) {
+    func didReceive(_ result: Result<HTTPResponse, IrisError>, target: TargetType) {
         callOrder.append("didReceive")
     }
     
-    func process(_ result: Result<RawResponse, IrisError>, target: TargetType) -> Result<RawResponse, IrisError> {
+    func process(_ result: Result<HTTPResponse, IrisError>, target: TargetType) -> Result<HTTPResponse, IrisError> {
         callOrder.append("process")
         return result
     }
@@ -163,9 +163,9 @@ final class ResponseModifyingPlugin: PluginType {
         self.newStatusCode = newStatusCode
     }
     
-    func process(_ result: Result<RawResponse, IrisError>, target: TargetType) -> Result<RawResponse, IrisError> {
+    func process(_ result: Result<HTTPResponse, IrisError>, target: TargetType) -> Result<HTTPResponse, IrisError> {
         if case .success(let response) = result {
-            let modifiedResponse = RawResponse(
+            let modifiedResponse = HTTPResponse(
                 statusCode: newStatusCode,
                 data: response.data,
                 request: response.request,
@@ -192,7 +192,7 @@ final class ErrorInjectingPlugin: PluginType {
         self.error = error
     }
     
-    func process(_ result: Result<RawResponse, IrisError>, target: TargetType) -> Result<RawResponse, IrisError> {
+    func process(_ result: Result<HTTPResponse, IrisError>, target: TargetType) -> Result<HTTPResponse, IrisError> {
         return .failure(error)
     }
 }
@@ -227,7 +227,7 @@ final class NetworkActivityPlugin: PluginType {
         networkActivityClosure(.began, target)
     }
     
-    func didReceive(_ result: Result<RawResponse, IrisError>, target: TargetType) {
+    func didReceive(_ result: Result<HTTPResponse, IrisError>, target: TargetType) {
         networkActivityClosure(.ended, target)
     }
 }

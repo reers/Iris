@@ -36,23 +36,23 @@ public enum IrisError: Swift.Error {
     /// Indicates a response failed to map to an image.
     ///
     /// This occurs when the response data cannot be converted to a `UIImage` or `NSImage`.
-    case imageMapping(RawResponse)
+    case imageMapping(HTTPResponse)
 
     /// Indicates a response failed to map to a JSON structure.
     ///
     /// This occurs when `JSONSerialization` fails to parse the response data.
-    case jsonMapping(RawResponse)
+    case jsonMapping(HTTPResponse)
 
     /// Indicates a response failed to map to a String.
     ///
     /// This occurs when the response data cannot be converted to a UTF-8 string.
-    case stringMapping(RawResponse)
+    case stringMapping(HTTPResponse)
 
     /// Indicates a response failed to map to a Decodable object.
     ///
     /// The associated `Error` contains the underlying decoding error with details
     /// about what went wrong during `Decodable` conformance.
-    case objectMapping(Swift.Error, RawResponse)
+    case objectMapping(Swift.Error, HTTPResponse)
 
     /// Indicates that an Encodable object couldn't be encoded into Data.
     ///
@@ -63,13 +63,13 @@ public enum IrisError: Swift.Error {
     ///
     /// This error is thrown when validation is enabled and the response status code
     /// falls outside the acceptable range.
-    case statusCode(RawResponse)
+    case statusCode(HTTPResponse)
 
     /// Indicates a response failed due to an underlying error.
     ///
     /// This wraps errors from the underlying networking layer (Alamofire/URLSession).
     /// The response may be nil if the error occurred before receiving a response.
-    case underlying(Swift.Error, RawResponse?)
+    case underlying(Swift.Error, HTTPResponse?)
 
     /// Indicates that an `Endpoint` failed to map to a `URLRequest`.
     ///
@@ -90,7 +90,7 @@ public extension IrisError {
     ///
     /// This allows access to the response data even when an error occurred,
     /// which can be useful for debugging or extracting error messages from the server.
-    var response: RawResponse? {
+    var response: HTTPResponse? {
         switch self {
         case .imageMapping(let response): return response
         case .jsonMapping(let response): return response

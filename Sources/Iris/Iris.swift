@@ -137,7 +137,7 @@ public struct Iris {
         
         // 5. Execute request based on task type. Network methods return Result
         // so failures still flow through plugin didReceive/process.
-        let networkResult: Result<RawResponse, IrisError>
+        let networkResult: Result<HTTPResponse, IrisError>
         
         switch request.task {
         case .uploadFile(let fileURL):
@@ -167,13 +167,13 @@ public struct Iris {
     ///
     /// - Parameters:
     ///   - type: The type to decode the response into.
-    ///   - rawResponse: The raw response containing the data to decode.
+    ///   - rawResponse: The HTTP response containing the data to decode.
     ///   - customDecoder: An optional custom JSON decoder. If nil, uses the global configuration decoder.
     /// - Returns: The decoded model.
     /// - Throws: `IrisError.objectMapping` if decoding fails.
     private static func decodeModel<Model: Decodable>(
         _ type: Model.Type,
-        from rawResponse: RawResponse,
+        from rawResponse: HTTPResponse,
         using customDecoder: JSONDecoder?
     ) throws -> Model {
         let decoder = customDecoder ?? configuration.jsonDecoder
@@ -190,7 +190,7 @@ public struct Iris {
     /// Both success and failure results pass through `didReceive` and `process`
     /// so plugins can log errors, hide activity indicators, or recover failures.
     private static func finish<Model: Decodable>(
-        _ result: Result<RawResponse, IrisError>,
+        _ result: Result<HTTPResponse, IrisError>,
         request: Call<Model>
     ) throws -> Response<Model> {
         configuration.plugins.forEach { $0.didReceive(result, target: request) }
@@ -217,13 +217,7 @@ public struct Iris {
                     onCompleteHandler(afResponse)
                 }
                 
-                return Response(
-                    model: model,
-                    statusCode: rawResponse.statusCode,
-                    data: rawResponse.data,
-                    request: rawResponse.request,
-                    response: rawResponse.response
-                )
+                return Response(model: model, httpResponse: rawResponse)
             } catch {
                 if let onCompleteHandler = request.onCompleteHandler {
                     let afError = AFError.responseSerializationFailed(reason: .decodingFailed(error: error))
@@ -274,8 +268,8 @@ public struct Iris {
         request: URLRequest?,
         response: HTTPURLResponse?,
         error: Error?
-    ) -> Result<RawResponse, IrisError> {
-        let rawResponse = RawResponse(
+    ) -> Result<HTTPResponse, IrisError> {
+        let rawResponse = HTTPResponse(
             statusCode: response?.statusCode ?? 0,
             data: data,
             request: request,
@@ -292,7 +286,7 @@ public struct Iris {
         return .failure(.underlying(error, rawResponse))
     }
     
-    private static func mapDataResponse(_ afResponse: AFDataResponse<Data>) -> Result<RawResponse, IrisError> {
+    private static func mapDataResponse(_ afResponse: AFDataResponse<Data>) -> Result<HTTPResponse, IrisError> {
         switch afResponse.result {
         case .success(let data):
             return mapNetworkResult(
@@ -311,7 +305,7 @@ public struct Iris {
         }
     }
     
-    private static func mapDownloadResponse(_ afResponse: DownloadResponse<Data, AFError>) -> Result<RawResponse, IrisError> {
+    private static func mapDownloadResponse(_ afResponse: DownloadResponse<Data, AFError>) -> Result<HTTPResponse, IrisError> {
         switch afResponse.result {
         case .success(let data):
             return mapNetworkResult(
@@ -333,7 +327,7 @@ public struct Iris {
     private static func performDataResponseRequest<Model: Decodable>(
         request: Call<Model>,
         buildRequest: () -> AFDataRequest
-    ) async -> Result<RawResponse, IrisError> {
+    ) async -> Result<HTTPResponse, IrisError> {
         let cancellationToken = AlamofireRequestCancellationToken()
         
         return await withTaskCancellationHandler {
@@ -359,7 +353,7 @@ public struct Iris {
     private static func performDownloadResponseRequest<Model: Decodable>(
         request: Call<Model>,
         buildRequest: () -> AFDownloadRequest
-    ) async -> Result<RawResponse, IrisError> {
+    ) async -> Result<HTTPResponse, IrisError> {
         let cancellationToken = AlamofireRequestCancellationToken()
         
         return await withTaskCancellationHandler {
@@ -428,7 +422,7 @@ public struct Iris {
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
         request: Call<Model>
-    ) async -> Result<RawResponse, IrisError> {
+    ) async -> Result<HTTPResponse, IrisError> {
         await performDataResponseRequest(request: request) {
             configuration.session.request(urlRequest, interceptor: interceptor)
         }
@@ -447,7 +441,7 @@ public struct Iris {
         fileURL: URL,
         interceptor: IrisCallInterceptor,
         request: Call<Model>
-    ) async -> Result<RawResponse, IrisError> {
+    ) async -> Result<HTTPResponse, IrisError> {
         await performDataResponseRequest(request: request) {
             configuration.session.upload(fileURL, with: urlRequest, interceptor: interceptor)
         }
@@ -466,7 +460,7 @@ public struct Iris {
         formData: MultipartFormData,
         interceptor: IrisCallInterceptor,
         request: Call<Model>
-    ) async -> Result<RawResponse, IrisError> {
+    ) async -> Result<HTTPResponse, IrisError> {
         await performDataResponseRequest(request: request) {
             let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
             afFormData.applyMoyaMultipartFormData(formData)
@@ -487,7 +481,7 @@ public struct Iris {
         destination: @escaping DownloadDestination,
         interceptor: IrisCallInterceptor,
         request: Call<Model>
-    ) async -> Result<RawResponse, IrisError> {
+    ) async -> Result<HTTPResponse, IrisError> {
         await performDownloadResponseRequest(request: request) {
             configuration.session.download(urlRequest, interceptor: interceptor, to: destination)
         }
@@ -525,10 +519,10 @@ public struct Iris {
         let callType = CallTypeWrapper(request: nil)
         configuration.plugins.forEach { $0.willSend(callType, target: request) }
         
-        let result: Result<RawResponse, IrisError>
+        let result: Result<HTTPResponse, IrisError>
         switch request.sampleResponseClosure() {
         case .networkResponse(let statusCode, let data):
-            let rawResponse = RawResponse(statusCode: statusCode, data: data)
+            let rawResponse = HTTPResponse(statusCode: statusCode, data: data)
             if request.validationType.statusCodes.isEmpty || request.validationType.statusCodes.contains(statusCode) {
                 result = .success(rawResponse)
             } else {
@@ -536,7 +530,7 @@ public struct Iris {
             }
             
         case .response(let response, let data):
-            let rawResponse = RawResponse(
+            let rawResponse = HTTPResponse(
                 statusCode: response.statusCode,
                 data: data,
                 request: nil,

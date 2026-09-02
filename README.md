@@ -117,7 +117,7 @@ let user = try await Call<User>.getUser(id: 123).fetch()
 // Method 2: fire() - Returns Response<Model> with metadata
 let response = try await Call<User>.getUser(id: 123).fire()
 print("Status: \(response.statusCode)")
-print("User: \(response.model!.name)")
+print("User: \(response.model.name)")
 
 // Access convenience properties
 if response.isSuccess {
@@ -300,7 +300,8 @@ response.isClientError   // true if 4xx
 response.isServerError   // true if 5xx
 
 // Data access
-response.model           // Decoded model (optional)
+response.model           // Decoded model
+response.httpResponse    // Underlying HTTPResponse
 response.data            // Raw response data
 response.request         // Original URLRequest
 response.response        // HTTPURLResponse
@@ -373,7 +374,7 @@ class LoggingPlugin: PluginType {
         print("Sending request to: \(target.path)")
     }
     
-    func didReceive(_ result: Result<RawResponse, IrisError>, target: TargetType) {
+    func didReceive(_ result: Result<HTTPResponse, IrisError>, target: TargetType) {
         // Called after response is received
         switch result {
         case .success(let response):
@@ -383,7 +384,7 @@ class LoggingPlugin: PluginType {
         }
     }
     
-    func process(_ result: Result<RawResponse, IrisError>, target: TargetType) -> Result<RawResponse, IrisError> {
+    func process(_ result: Result<HTTPResponse, IrisError>, target: TargetType) -> Result<HTTPResponse, IrisError> {
         // Transform the result before returning
         return result
     }
@@ -475,17 +476,11 @@ do {
 ## Type Aliases
 
 ```swift
-// Response without a model
-typealias RawResponse = Response<Never>
-
-// Request that doesn't parse response
-typealias RawCall = Call<Raw>
-typealias Raw = Empty
+// Undecoded HTTP response used by plugins and IrisError.
+let httpResponse: HTTPResponse
 
 // Create a request without response parsing
-let request = Call.plain()
-// or
-let request = Call.raw()
+let request = Call.empty()
 ```
 
 ## Requirements

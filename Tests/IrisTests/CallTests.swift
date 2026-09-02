@@ -661,8 +661,8 @@ final class CallTests: XCTestCase {
     
     // MARK: - Static Factory Tests
     
-    func testPlainRequestFactory() {
-        let request = Call.plain()
+    func testEmptyResponseFactory() {
+        let request = Call.empty()
         
         XCTAssertEqual(request.method, .get)
         if case .requestPlain = request.task {
@@ -670,12 +670,6 @@ final class CallTests: XCTestCase {
         } else {
             XCTFail("Expected callPlain task")
         }
-    }
-    
-    func testRawRequestFactory() {
-        let request = Call.raw()
-        
-        XCTAssertEqual(request.method, .get)
     }
     
     // MARK: - TargetType Conformance Tests

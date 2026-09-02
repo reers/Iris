@@ -33,8 +33,8 @@ final class StubTests: XCTestCase {
             .fire()
         
         XCTAssertEqual(response.statusCode, 200)
-        XCTAssertEqual(response.model?.login, "testuser")
-        XCTAssertEqual(response.model?.id, 123)
+        XCTAssertEqual(response.model.login, "testuser")
+        XCTAssertEqual(response.model.id, 123)
     }
     
     func testStubCanReturnCustomStatusCode() async throws {
@@ -46,7 +46,7 @@ final class StubTests: XCTestCase {
             .fire()
         
         XCTAssertEqual(response.statusCode, 201)
-        XCTAssertEqual(response.model?.login, "created")
+        XCTAssertEqual(response.model.login, "created")
     }
     
     func testStubValidationFailsForCustomStatusCode() async {
@@ -95,8 +95,8 @@ final class StubTests: XCTestCase {
             .stub(user)
             .fire()
         
-        XCTAssertEqual(response.model?.login, "stubuser")
-        XCTAssertEqual(response.model?.id, 456)
+        XCTAssertEqual(response.model.login, "stubuser")
+        XCTAssertEqual(response.model.id, 456)
     }
     
     func testStubFromString() async throws {
@@ -105,8 +105,8 @@ final class StubTests: XCTestCase {
             .stub("{\"login\": \"stringuser\", \"id\": 789}")
             .fire()
         
-        XCTAssertEqual(response.model?.login, "stringuser")
-        XCTAssertEqual(response.model?.id, 789)
+        XCTAssertEqual(response.model.login, "stringuser")
+        XCTAssertEqual(response.model.id, 789)
     }
     
     // MARK: - Delayed Stub Tests
@@ -123,7 +123,7 @@ final class StubTests: XCTestCase {
         
         let elapsedTime = Date().timeIntervalSince(startTime)
         
-        XCTAssertEqual(response.model?.login, "delayed")
+        XCTAssertEqual(response.model.login, "delayed")
         XCTAssertGreaterThanOrEqual(elapsedTime, delay * 0.9) // Allow some tolerance
     }
     
@@ -144,7 +144,7 @@ final class StubTests: XCTestCase {
         
         let elapsedTime = Date().timeIntervalSince(startTime)
         
-        XCTAssertEqual(response.model?.login, "globaldelayed")
+        XCTAssertEqual(response.model.login, "globaldelayed")
         XCTAssertGreaterThanOrEqual(elapsedTime, delay * 0.9)
     }
     
@@ -169,7 +169,7 @@ final class StubTests: XCTestCase {
         
         let elapsedTime = Date().timeIntervalSince(startTime)
         
-        XCTAssertEqual(response.model?.login, "override")
+        XCTAssertEqual(response.model.login, "override")
         XCTAssertLessThan(elapsedTime, 0.5) // Should be much faster than 1.0s
     }
     
@@ -207,7 +207,7 @@ final class StubTests: XCTestCase {
     
     func testEmptyResponseStub() async throws {
         let response = try await Call<Empty>
-            .plain()
+            .empty()
             .path("/ping")
             .stub(Data())
             .fire()
@@ -233,10 +233,10 @@ final class StubTests: XCTestCase {
             .stub(sampleData)
             .fire()
         
-        XCTAssertEqual(response.model?.count, 3)
-        XCTAssertEqual(response.model?[0].login, "user1")
-        XCTAssertEqual(response.model?[1].login, "user2")
-        XCTAssertEqual(response.model?[2].login, "user3")
+        XCTAssertEqual(response.model.count, 3)
+        XCTAssertEqual(response.model[0].login, "user1")
+        XCTAssertEqual(response.model[1].login, "user2")
+        XCTAssertEqual(response.model[2].login, "user3")
     }
     
     // MARK: - Plugin Integration Tests
@@ -324,7 +324,7 @@ final class StubTests: XCTestCase {
             .stub(GitHubUser(login: "newuser", id: 999))
             .fire()
         
-        XCTAssertEqual(response.model?.login, "newuser")
+        XCTAssertEqual(response.model.login, "newuser")
     }
     
     func testStubWorksWithPutMethod() async throws {
@@ -335,7 +335,7 @@ final class StubTests: XCTestCase {
             .stub(GitHubUser(login: "updateduser", id: 1))
             .fire()
         
-        XCTAssertEqual(response.model?.login, "updateduser")
+        XCTAssertEqual(response.model.login, "updateduser")
     }
     
     func testStubWorksWithDeleteMethod() async throws {
@@ -362,7 +362,7 @@ final class StubTests: XCTestCase {
             .decoder(decoder)
             .fire()
         
-        XCTAssertEqual(response.model?.login, "customdecoder")
+        XCTAssertEqual(response.model.login, "customdecoder")
     }
     
     // MARK: - OnComplete Handler Tests

@@ -103,10 +103,9 @@ final class IrisTests: XCTestCase {
         // fire() returns Response<User>
         let response = try await Call<User>.getUserWithStub(id: 123).fire()
         
-        // model is optional but guaranteed to have a value on successful fire()
-        XCTAssertNotNil(response.model)
-        XCTAssertEqual(response.model?.id, 123)
-        XCTAssertEqual(response.model?.name, "Stubbed User")
+        // model is non-optional on successful fire()
+        XCTAssertEqual(response.model.id, 123)
+        XCTAssertEqual(response.model.name, "Stubbed User")
         
         // Use unwrap() to get non-optional value
         let user = try response.unwrap()
@@ -147,7 +146,7 @@ final class IrisTests: XCTestCase {
     
     func testEmpty() async throws {
         let request = Call
-            .plain()
+            .empty()
             .path("/ping")
             .stub(behavior: .immediate)
         
@@ -187,19 +186,17 @@ final class IrisTests: XCTestCase {
         XCTAssertEqual(filtered.statusCode, 200)
     }
     
-    // MARK: - RawResponse Tests
+    // MARK: - HTTPResponse Tests
     
-    func testRawResponse() async throws {
+    func testHTTPResponse() async throws {
         let response = try await Call<User>.getUserWithStub(id: 1).fire()
         
-        // Convert to RawResponse (Response<Never>)
-        let raw: RawResponse = response.asRaw()
-        XCTAssertEqual(raw.statusCode, 200)
-        XCTAssertTrue(raw.isSuccess)
-        XCTAssertNil(raw.model)  // RawResponse's model is always nil
+        let httpResponse = response.httpResponse
+        XCTAssertEqual(httpResponse.statusCode, 200)
+        XCTAssertTrue(httpResponse.isSuccess)
         
-        // RawResponse has the same mapping methods
-        let user = try raw.map(User.self)
+        // HTTPResponse exposes mapping methods for undecoded data.
+        let user = try httpResponse.map(User.self)
         XCTAssertEqual(user.name, "Stubbed User")
     }
     
@@ -225,8 +222,8 @@ final class IrisTests: XCTestCase {
         
         let response = try await GitHubAPI.userProfile("ashfurrow").fire()
         
-        XCTAssertEqual(response.model?.login, "ashfurrow")
-        XCTAssertEqual(response.model?.id, 100)
+        XCTAssertEqual(response.model.login, "ashfurrow")
+        XCTAssertEqual(response.model.id, 100)
     }
     
     // MARK: - Validation Tests
@@ -294,8 +291,8 @@ final class IrisTests: XCTestCase {
  
  // Method 1: fire() - Returns Response<Model>
  let response = try await Call<User>.getUser(id: 123).fire()
- let user = response.model!          // model is optional
- let user = try response.unwrap()    // or use unwrap()
+ let user = response.model
+ let user = try response.unwrap()    // semantic alias for model
  
  // Method 2: fetch() - Returns Model directly (recommended)
  let user = try await Call<User>.getUser(id: 123).fetch()
@@ -303,8 +300,9 @@ final class IrisTests: XCTestCase {
  ## Type Structure
  
  - Response<Model>: Generic response type
-   - model: Model? (optional, has value on successful fire())
+   - model: Model (non-optional after successful decoding)
    - statusCode, data, isSuccess, etc.
- - RawResponse = Response<Never>: Response without model (used in plugins)
+   - httpResponse: HTTPResponse
+ - HTTPResponse: Undecoded HTTP response used in plugins and IrisError
  
  */
