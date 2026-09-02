@@ -50,9 +50,10 @@ public struct IrisConfiguration {
     /// Configure this to customize date decoding strategies, key decoding, etc.
     public var jsonDecoder: JSONDecoder
     
-    /// The JSON encoder used for request body encoding.
+    /// The JSON encoder used for Encodable request bodies and Encodable stubs.
     ///
-    /// Configure this to customize date encoding strategies, key encoding, etc.
+    /// Used when a request does not pass its own encoder. Configure this to
+    /// customize date encoding strategies, key encoding, etc.
     public var jsonEncoder: JSONEncoder
     
     /// The list of plugins to apply to all requests.
@@ -228,7 +229,7 @@ public extension IrisConfiguration {
         return config
     }
     
-    /// Sets the JSON encoder.
+    /// Sets the JSON encoder used for Encodable request bodies and stubs.
     ///
     /// - Parameter encoder: The encoder to use.
     /// - Returns: A new configuration with the updated encoder.

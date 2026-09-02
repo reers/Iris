@@ -384,6 +384,40 @@ final class CallTests: XCTestCase {
         XCTAssertFalse(request.sampleData.isEmpty)
     }
     
+    func testStubUsesConfigurationEncoder() throws {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        Iris.configure(IrisConfiguration().encoder(encoder))
+        
+        struct Probe: Encodable {
+            let userName: String
+        }
+        
+        let request = Call<Empty>()
+            .stub(Probe(userName: "ada"))
+        let json = try JSONSerialization.jsonObject(with: request.sampleData) as! [String: String]
+        
+        XCTAssertEqual(json["user_name"], "ada")
+        XCTAssertNil(json["userName"])
+    }
+    
+    func testStubEncoderOverridesConfiguration() throws {
+        let configEncoder = JSONEncoder()
+        configEncoder.keyEncodingStrategy = .convertToSnakeCase
+        Iris.configure(IrisConfiguration().encoder(configEncoder))
+        
+        struct Probe: Encodable {
+            let userName: String
+        }
+        
+        let request = Call<Empty>()
+            .stub(Probe(userName: "ada"), encoder: JSONEncoder())
+        let json = try JSONSerialization.jsonObject(with: request.sampleData) as! [String: String]
+        
+        XCTAssertEqual(json["userName"], "ada")
+        XCTAssertNil(json["user_name"])
+    }
+    
     func testStubFromString() {
         let request = Call<Empty>()
             .stub("{\"name\": \"test\"}")

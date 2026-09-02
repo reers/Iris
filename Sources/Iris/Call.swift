@@ -233,6 +233,8 @@ public struct Call<ResponseType: Decodable>: TargetType {
     
     /// Sets the request body from an Encodable object.
     ///
+    /// Encoded with `IrisConfiguration.jsonEncoder` unless `body(_:encoder:)` is used.
+    ///
     /// - Parameter encodable: The object to encode as JSON.
     /// - Returns: A new call with JSON-encoded body.
     public func body<T: Encodable>(_ encodable: T) -> Call<ResponseType> {
@@ -483,9 +485,9 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameters:
     ///   - model: The model to encode as stub data.
-    ///   - encoder: The encoder to use. Default is a new `JSONEncoder`.
+    ///   - encoder: The encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
     /// - Returns: A new call with the encoded stub data.
-    public func stub<T: Encodable>(_ model: T, encoder: JSONEncoder = JSONEncoder()) -> Call<ResponseType> {
+    public func stub<T: Encodable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) -> Call<ResponseType> {
         var request = self
         request.sampleData = (try? encoder.encode(model)) ?? Data()
         return request

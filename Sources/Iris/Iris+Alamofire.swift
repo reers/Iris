@@ -69,10 +69,10 @@ internal extension URLRequest {
     ///
     /// - Parameters:
     ///   - encodable: The object to encode.
-    ///   - encoder: The JSON encoder to use. Default is a new `JSONEncoder`.
+    ///   - encoder: The JSON encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
     /// - Returns: The request with the encoded body.
     /// - Throws: `IrisError.encodableMapping` if encoding fails.
-    func encoded(encodable: Encodable, encoder: JSONEncoder = JSONEncoder()) throws -> URLRequest {
+    func encoded(encodable: Encodable, encoder: JSONEncoder = Iris.configuration.jsonEncoder) throws -> URLRequest {
         do {
             let encodableWrapper = AnyEncodable(encodable)
             let data = try encoder.encode(encodableWrapper)

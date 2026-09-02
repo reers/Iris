@@ -40,9 +40,9 @@ public enum CallTask {
     /// - Parameter data: The raw data to send as the request body.
     case requestData(Data)
 
-    /// A request with the body set with an `Encodable` type using default JSON encoding.
+    /// A request with the body set with an `Encodable` type using the global JSON encoder.
     ///
-    /// The encodable object will be serialized to JSON using a default `JSONEncoder`.
+    /// The encodable object will be serialized to JSON using `IrisConfiguration.jsonEncoder`.
     ///
     /// - Parameter encodable: The object to encode as the request body.
     case requestJSONEncodable(Encodable)

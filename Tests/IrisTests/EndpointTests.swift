@@ -15,6 +15,16 @@ final class EndpointTests: XCTestCase {
         makeSimpleEndpoint()
     }
     
+    override func setUp() {
+        super.setUp()
+        Iris.configuration = IrisConfiguration()
+    }
+    
+    override func tearDown() {
+        Iris.configuration = IrisConfiguration()
+        super.tearDown()
+    }
+    
     // MARK: - Basic Tests
     
     func testReturnsNewEndpointForAddingNewHTTPHeaderFields() {
@@ -202,6 +212,32 @@ final class EndpointTests: XCTestCase {
         let expectedIssue = try decoder.decode(Issue.self, from: request.httpBody!)
         XCTAssertEqual(formatter.string(from: issue.createdAt), formatter.string(from: expectedIssue.createdAt))
         XCTAssertEqual(issue.title, expectedIssue.title)
+    }
+    
+    func testRequestJSONEncodableUsesConfigurationEncoder() throws {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        Iris.configure(IrisConfiguration().encoder(encoder))
+        
+        let endpoint = simpleGitHubEndpoint.replacing(task: .requestJSONEncodable(Issue(title: "Hello", createdAt: Date(), rating: nil)))
+        let request = try endpoint.urlRequest()
+        let json = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+        
+        XCTAssertNotNil(json["created_at"])
+        XCTAssertNil(json["createdAt"])
+    }
+    
+    func testRequestCustomJSONEncodableOverridesConfigurationEncoder() throws {
+        let configEncoder = JSONEncoder()
+        configEncoder.keyEncodingStrategy = .convertToSnakeCase
+        Iris.configure(IrisConfiguration().encoder(configEncoder))
+        
+        let endpoint = simpleGitHubEndpoint.replacing(task: .requestCustomJSONEncodable(Issue(title: "Hello", createdAt: Date(), rating: nil), encoder: JSONEncoder()))
+        let request = try endpoint.urlRequest()
+        let json = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+        
+        XCTAssertNotNil(json["createdAt"])
+        XCTAssertNil(json["created_at"])
     }
     
     // MARK: - Task: requestCompositeData Tests
