@@ -72,8 +72,17 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// Custom base URL that overrides the global configuration.
     private var _baseURL: URL?
     
+    /// Per-request timeout that overrides the global configuration.
+    private var _timeout: TimeInterval?
+    
     /// Request timeout interval in seconds.
-    public var timeout: TimeInterval = 30
+    ///
+    /// Uses the per-request timeout when set, otherwise `IrisConfiguration.defaultTimeout`
+    /// (which defaults to 30 seconds).
+    public var timeout: TimeInterval {
+        get { _timeout ?? Iris.configuration.defaultTimeout }
+        set { _timeout = newValue }
+    }
     
     /// Custom JSON decoder for response parsing.
     public var decoder: JSONDecoder?
@@ -114,13 +123,13 @@ public struct Call<ResponseType: Decodable>: TargetType {
         return request
     }
     
-    /// Sets the request timeout interval.
+    /// Sets the request timeout interval, overriding the global configuration.
     ///
     /// - Parameter timeout: The timeout in seconds.
     /// - Returns: A new call with the updated timeout.
     public func timeout(_ timeout: TimeInterval) -> Call<ResponseType> {
         var request = self
-        request.timeout = timeout
+        request._timeout = timeout
         return request
     }
     

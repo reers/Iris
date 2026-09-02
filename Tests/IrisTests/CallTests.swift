@@ -39,6 +39,23 @@ final class CallTests: XCTestCase {
         XCTAssertEqual(request.timeout, 60)
     }
     
+    func testTimeoutFallsBackToConfiguration() {
+        Iris.configure(IrisConfiguration().timeout(45))
+        
+        let request = Call<Empty>()
+        
+        XCTAssertEqual(request.timeout, 45)
+    }
+    
+    func testRequestTimeoutOverridesConfiguration() {
+        Iris.configure(IrisConfiguration().timeout(45))
+        
+        let request = Call<Empty>()
+            .timeout(10)
+        
+        XCTAssertEqual(request.timeout, 10)
+    }
+    
     func testDefaultValues() {
         let request = Call<Empty>()
         

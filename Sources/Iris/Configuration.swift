@@ -41,6 +41,8 @@ public struct IrisConfiguration {
     public var defaultHeaders: [String: String]
     
     /// Default timeout interval for requests in seconds.
+    ///
+    /// Used when a request does not set its own timeout. Defaults to 30.
     public var defaultTimeout: TimeInterval
     
     /// The JSON decoder used for response parsing.
