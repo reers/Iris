@@ -289,6 +289,42 @@ public struct Iris {
         }
     }
     
+    private static func performDataResponseRequest<Model: Decodable>(
+        request: Call<Model>,
+        buildRequest: () -> AFDataRequest
+    ) async -> Result<RawResponse, IrisError> {
+        await withCheckedContinuation { continuation in
+            let validationCodes = request.validationType.statusCodes
+            var afRequest = buildRequest()
+            
+            if !validationCodes.isEmpty {
+                afRequest = afRequest.validate(statusCode: validationCodes)
+            }
+            
+            afRequest.responseData { afResponse in
+                continuation.resume(returning: mapDataResponse(afResponse))
+            }
+        }
+    }
+    
+    private static func performDownloadResponseRequest<Model: Decodable>(
+        request: Call<Model>,
+        buildRequest: () -> AFDownloadRequest
+    ) async -> Result<RawResponse, IrisError> {
+        await withCheckedContinuation { continuation in
+            let validationCodes = request.validationType.statusCodes
+            var afRequest = buildRequest()
+            
+            if !validationCodes.isEmpty {
+                afRequest = afRequest.validate(statusCode: validationCodes)
+            }
+            
+            afRequest.responseData { afResponse in
+                continuation.resume(returning: mapDownloadResponse(afResponse))
+            }
+        }
+    }
+    
     /// Resolves the final URL for a request path.
     ///
     /// Absolute paths are used directly. Relative paths are resolved against
@@ -336,17 +372,8 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         request: Call<Model>
     ) async -> Result<RawResponse, IrisError> {
-        await withCheckedContinuation { continuation in
-            let validationCodes = request.validationType.statusCodes
-            var afRequest = configuration.session.request(urlRequest, interceptor: interceptor)
-            
-            if !validationCodes.isEmpty {
-                afRequest = afRequest.validate(statusCode: validationCodes)
-            }
-            
-            afRequest.responseData { afResponse in
-                continuation.resume(returning: mapDataResponse(afResponse))
-            }
+        await performDataResponseRequest(request: request) {
+            configuration.session.request(urlRequest, interceptor: interceptor)
         }
     }
     
@@ -364,17 +391,8 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         request: Call<Model>
     ) async -> Result<RawResponse, IrisError> {
-        await withCheckedContinuation { continuation in
-            let validationCodes = request.validationType.statusCodes
-            var afRequest = configuration.session.upload(fileURL, with: urlRequest, interceptor: interceptor)
-            
-            if !validationCodes.isEmpty {
-                afRequest = afRequest.validate(statusCode: validationCodes)
-            }
-            
-            afRequest.responseData { afResponse in
-                continuation.resume(returning: mapDataResponse(afResponse))
-            }
+        await performDataResponseRequest(request: request) {
+            configuration.session.upload(fileURL, with: urlRequest, interceptor: interceptor)
         }
     }
     
@@ -392,20 +410,10 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         request: Call<Model>
     ) async -> Result<RawResponse, IrisError> {
-        await withCheckedContinuation { continuation in
+        await performDataResponseRequest(request: request) {
             let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
             afFormData.applyMoyaMultipartFormData(formData)
-            
-            let validationCodes = request.validationType.statusCodes
-            var afRequest = configuration.session.upload(multipartFormData: afFormData, with: urlRequest, interceptor: interceptor)
-            
-            if !validationCodes.isEmpty {
-                afRequest = afRequest.validate(statusCode: validationCodes)
-            }
-            
-            afRequest.responseData { afResponse in
-                continuation.resume(returning: mapDataResponse(afResponse))
-            }
+            return configuration.session.upload(multipartFormData: afFormData, with: urlRequest, interceptor: interceptor)
         }
     }
     
@@ -423,17 +431,8 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         request: Call<Model>
     ) async -> Result<RawResponse, IrisError> {
-        await withCheckedContinuation { continuation in
-            let validationCodes = request.validationType.statusCodes
-            var afRequest = configuration.session.download(urlRequest, interceptor: interceptor, to: destination)
-            
-            if !validationCodes.isEmpty {
-                afRequest = afRequest.validate(statusCode: validationCodes)
-            }
-            
-            afRequest.responseData { afResponse in
-                continuation.resume(returning: mapDownloadResponse(afResponse))
-            }
+        await performDownloadResponseRequest(request: request) {
+            configuration.session.download(urlRequest, interceptor: interceptor, to: destination)
         }
     }
     
