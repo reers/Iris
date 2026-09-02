@@ -501,6 +501,43 @@ final class CallTests: XCTestCase {
         XCTAssertNotNil(request.onCompleteHandler)
     }
     
+    // MARK: - Cancellation Tests
+    
+    func testCancellingTaskCancelsUnderlyingRequest() async {
+        let didStartUnderlyingRequest = expectation(description: "Underlying request should start")
+        let didCancelUnderlyingRequest = expectation(description: "Underlying request should be cancelled")
+        StubURLProtocol.responseDelay = 5
+        StubURLProtocol.onStartLoading = {
+            didStartUnderlyingRequest.fulfill()
+        }
+        StubURLProtocol.onStopLoading = {
+            didCancelUnderlyingRequest.fulfill()
+        }
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        defer { StubURLProtocol.reset() }
+        
+        Iris.configure(IrisConfiguration().session(makeStubbedSession()))
+        
+        let task = _Concurrency.Task {
+            try await Call<Empty>()
+                .baseURL("https://example.com")
+                .path("/slow")
+                .fire()
+        }
+        
+        await fulfillment(of: [didStartUnderlyingRequest], timeout: 1)
+        task.cancel()
+        await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
+    }
+    
     // MARK: - Chaining Tests
     
     func testCompleteChaining() {

@@ -7,6 +7,44 @@
 
 import Foundation
 import Alamofire
+import os.lock
+
+private final class AlamofireRequestCancellationToken {
+    private let lock: os_unfair_lock_t
+    private var request: Request?
+    private var isCancelled = false
+    
+    init() {
+        lock = .allocate(capacity: 1)
+        lock.initialize(to: os_unfair_lock_s())
+    }
+    
+    deinit {
+        lock.deinitialize(count: 1)
+        lock.deallocate()
+    }
+    
+    func setRequest(_ request: Request) {
+        os_unfair_lock_lock(lock)
+        if isCancelled {
+            os_unfair_lock_unlock(lock)
+            request.cancel()
+            return
+        }
+        
+        self.request = request
+        os_unfair_lock_unlock(lock)
+    }
+    
+    func cancel() {
+        os_unfair_lock_lock(lock)
+        isCancelled = true
+        let request = request
+        os_unfair_lock_unlock(lock)
+        
+        request?.cancel()
+    }
+}
 
 /// The core networking struct of Iris.
 ///
@@ -293,17 +331,25 @@ public struct Iris {
         request: Call<Model>,
         buildRequest: () -> AFDataRequest
     ) async -> Result<RawResponse, IrisError> {
-        await withCheckedContinuation { continuation in
-            let validationCodes = request.validationType.statusCodes
-            var afRequest = buildRequest()
-            
-            if !validationCodes.isEmpty {
-                afRequest = afRequest.validate(statusCode: validationCodes)
+        let cancellationToken = AlamofireRequestCancellationToken()
+        
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let validationCodes = request.validationType.statusCodes
+                var afRequest = buildRequest()
+                
+                if !validationCodes.isEmpty {
+                    afRequest = afRequest.validate(statusCode: validationCodes)
+                }
+                
+                cancellationToken.setRequest(afRequest)
+                
+                afRequest.responseData { afResponse in
+                    continuation.resume(returning: mapDataResponse(afResponse))
+                }
             }
-            
-            afRequest.responseData { afResponse in
-                continuation.resume(returning: mapDataResponse(afResponse))
-            }
+        } onCancel: {
+            cancellationToken.cancel()
         }
     }
     
@@ -311,17 +357,25 @@ public struct Iris {
         request: Call<Model>,
         buildRequest: () -> AFDownloadRequest
     ) async -> Result<RawResponse, IrisError> {
-        await withCheckedContinuation { continuation in
-            let validationCodes = request.validationType.statusCodes
-            var afRequest = buildRequest()
-            
-            if !validationCodes.isEmpty {
-                afRequest = afRequest.validate(statusCode: validationCodes)
+        let cancellationToken = AlamofireRequestCancellationToken()
+        
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let validationCodes = request.validationType.statusCodes
+                var afRequest = buildRequest()
+                
+                if !validationCodes.isEmpty {
+                    afRequest = afRequest.validate(statusCode: validationCodes)
+                }
+                
+                cancellationToken.setRequest(afRequest)
+                
+                afRequest.responseData { afResponse in
+                    continuation.resume(returning: mapDownloadResponse(afResponse))
+                }
             }
-            
-            afRequest.responseData { afResponse in
-                continuation.resume(returning: mapDownloadResponse(afResponse))
-            }
+        } onCancel: {
+            cancellationToken.cancel()
         }
     }
     

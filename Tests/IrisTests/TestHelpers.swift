@@ -342,31 +342,50 @@ final class SendableArray<T>: @unchecked Sendable {
 final class StubURLProtocol: URLProtocol {
     
     static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+    static var responseDelay: TimeInterval = 0
+    static var onStartLoading: (() -> Void)?
+    static var onStopLoading: (() -> Void)?
+    
+    private var workItem: DispatchWorkItem?
     
     override class func canInit(with request: URLRequest) -> Bool { true }
     
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     
     override func startLoading() {
+        Self.onStartLoading?()
+        
         guard let handler = Self.handler else {
             client?.urlProtocolDidFinishLoading(self)
             return
         }
         
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            do {
+                let (response, data) = try handler(request)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
         }
+        self.workItem = workItem
+        
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.responseDelay, execute: workItem)
     }
     
-    override func stopLoading() {}
+    override func stopLoading() {
+        workItem?.cancel()
+        Self.onStopLoading?()
+    }
     
     static func reset() {
         handler = nil
+        responseDelay = 0
+        onStartLoading = nil
+        onStopLoading = nil
     }
 }
 
