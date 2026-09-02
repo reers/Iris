@@ -229,6 +229,23 @@ final class ResponseTests: XCTestCase {
         XCTAssertEqual(issue.title, "Test")
     }
     
+    func testMapUsesConfigurationDecoder() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        Iris.configure(IrisConfiguration().decoder(decoder))
+        defer { Iris.configuration = IrisConfiguration() }
+        
+        struct Probe: Decodable {
+            let userName: String
+        }
+        
+        let data = "{\"user_name\": \"ada\"}".data(using: .utf8)!
+        let response = RawResponse(statusCode: 200, data: data)
+        let probe = try response.map(Probe.self)
+        
+        XCTAssertEqual(probe.userName, "ada")
+    }
+    
     // MARK: - Image Mapping Tests
     
     func testMapImageWithValidImageData() throws {

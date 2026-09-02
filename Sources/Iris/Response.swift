@@ -226,11 +226,11 @@ public struct Response<Model>: CustomDebugStringConvertible {
     /// - Parameters:
     ///   - type: The type to decode to.
     ///   - keyPath: Optional key path to extract the object from.
-    ///   - decoder: The JSON decoder to use. Default is a new `JSONDecoder`.
+    ///   - decoder: The JSON decoder to use. Defaults to `Iris.configuration.jsonDecoder`.
     ///   - failsOnEmptyData: Whether to throw an error on empty data. Default is `true`.
     /// - Returns: The decoded object.
     /// - Throws: `IrisError.objectMapping` or `IrisError.jsonMapping` if decoding fails.
-    public func map<D: Decodable>(_ type: D.Type, atKeyPath keyPath: String? = nil, using decoder: JSONDecoder = JSONDecoder(), failsOnEmptyData: Bool = true) throws -> D {
+    public func map<D: Decodable>(_ type: D.Type, atKeyPath keyPath: String? = nil, using decoder: JSONDecoder = Iris.configuration.jsonDecoder, failsOnEmptyData: Bool = true) throws -> D {
         let serializeToData: (Any) throws -> Data? = { (jsonObject) in
             guard JSONSerialization.isValidJSONObject(jsonObject) else {
                 return nil
