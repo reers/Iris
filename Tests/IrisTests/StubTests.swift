@@ -216,6 +216,61 @@ final class StubTests: XCTestCase {
         XCTAssertTrue(response.isSuccess)
     }
     
+    func testRawDataResponseReturnsBodyWithoutJSONDecoding() async throws {
+        let sampleData = Data([0x00, 0xFF, 0x10, 0x20])
+        
+        let response = try await Call.data()
+            .path("/v1/shield")
+            .stub(sampleData)
+            .send()
+        
+        XCTAssertEqual(response.model, sampleData)
+        XCTAssertEqual(response.data, sampleData)
+        XCTAssertEqual(try response.unwrap(), sampleData)
+    }
+    
+    func testRawDataFetchReturnsJSONObjectBytes() async throws {
+        let json = #"{"ok":true}"#.data(using: .utf8)!
+        
+        let data = try await Call<Data>()
+            .path("/v1/configs")
+            .stub(json)
+            .fetch()
+        
+        XCTAssertEqual(data, json)
+    }
+    
+    func testRawDataFetchAllowsEmptyBody() async throws {
+        let data = try await Call.data()
+            .path("/v1/like")
+            .stub(Data())
+            .fetch()
+        
+        XCTAssertEqual(data, Data())
+    }
+    
+    func testRawStringResponseReturnsUTF8Body() async throws {
+        let body = "Half measures are as bad as nothing at all."
+        
+        let text = try await Call.string()
+            .path("/zen")
+            .stub(body)
+            .fetch()
+        
+        XCTAssertEqual(text, body)
+    }
+    
+    func testRawStringDoesNotJSONDecode() async throws {
+        let jsonObject = #"{"ok":true}"#
+        
+        let text = try await Call<String>()
+            .path("/v1/void")
+            .stub(jsonObject)
+            .fetch()
+        
+        XCTAssertEqual(text, jsonObject)
+    }
+    
     // MARK: - Array Response Tests
     
     func testArrayResponseStub() async throws {

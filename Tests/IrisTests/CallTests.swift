@@ -672,6 +672,28 @@ final class CallTests: XCTestCase {
         }
     }
     
+    func testDataResponseFactory() {
+        let request = Call.data()
+        
+        XCTAssertEqual(request.method, .get)
+        if case .requestPlain = request.task {
+            // Expected
+        } else {
+            XCTFail("Expected callPlain task")
+        }
+    }
+    
+    func testStringResponseFactory() {
+        let request = Call.string()
+        
+        XCTAssertEqual(request.method, .get)
+        if case .requestPlain = request.task {
+            // Expected
+        } else {
+            XCTFail("Expected callPlain task")
+        }
+    }
+    
     // MARK: - TargetType Conformance Tests
     
     func testTargetTypeConformance() {

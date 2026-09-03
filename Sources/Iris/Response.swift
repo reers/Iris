@@ -170,7 +170,10 @@ public struct HTTPResponse: CustomDebugStringConvertible {
     
     /// Maps the response data to a `Decodable` type.
     ///
-    /// This method supports extracting nested objects using key paths.
+    /// `Data` and `String` are treated as the raw HTTP body, not JSON:
+    /// `Data` is the bytes as received, and `String` is UTF-8 text. Nested
+    /// `keyPath` extraction still uses JSON; `Data` then returns the nested
+    /// value's JSON bytes.
     ///
     /// - Parameters:
     ///   - type: The type to decode to.
@@ -178,13 +181,31 @@ public struct HTTPResponse: CustomDebugStringConvertible {
     ///   - decoder: The JSON decoder to use. Defaults to `Iris.configuration.jsonDecoder`.
     ///   - failsOnEmptyData: Whether to throw an error on empty data. Default is `true`.
     /// - Returns: The decoded object.
-    /// - Throws: `IrisError.objectMapping` or `IrisError.jsonMapping` if decoding fails.
+    /// - Throws: `IrisError.objectMapping`, `IrisError.jsonMapping`, or
+    ///   `IrisError.stringMapping` if decoding fails.
     public func map<D: Decodable>(
         _ type: D.Type,
         atKeyPath keyPath: String? = nil,
         using decoder: JSONDecoder = Iris.configuration.jsonDecoder,
         failsOnEmptyData: Bool = true
     ) throws -> D {
+        if D.self == Data.self {
+            if let keyPath {
+                guard let jsonObject = (try mapJSON(failsOnEmptyData: failsOnEmptyData) as? NSDictionary)?.value(forKeyPath: keyPath) else {
+                    throw IrisError.jsonMapping(self)
+                }
+                do {
+                    return try JSONSerialization.data(withJSONObject: jsonObject, options: [.fragmentsAllowed]) as! D
+                } catch {
+                    throw IrisError.jsonMapping(self)
+                }
+            }
+            return data as! D
+        }
+        if D.self == String.self {
+            return try mapString(atKeyPath: keyPath) as! D
+        }
+
         let serializeToData: (Any) throws -> Data? = { jsonObject in
             guard JSONSerialization.isValidJSONObject(jsonObject) else {
                 return nil

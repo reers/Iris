@@ -123,6 +123,18 @@ print("User: \(response.model.name)")
 if response.isSuccess {
     let user = try response.unwrap()
 }
+
+// Raw body, no JSON decoding — equivalent to Far's GET/POST<…, Data>
+let bytes = try await Call.data()
+    .path("/v1/shield")
+    .method(.post)
+    .body(["userId": 1])
+    .fetch()
+
+// UTF-8 body, no JSON decoding — equivalent to Far's Returns == String
+let text = try await Call.string()
+    .path("/zen")
+    .fetch()
 ```
 
 ## Request Configuration
@@ -263,7 +275,7 @@ let destination: DownloadDestination = { temporaryURL, response in
     return (fileURL, [.removePreviousFile, .createIntermediateDirectories])
 }
 
-Call<Data>()
+Call.data()
     .path("/files/document.pdf")
     .download(to: destination)
 ```
@@ -300,12 +312,33 @@ response.isClientError   // true if 4xx
 response.isServerError   // true if 5xx
 
 // Data access
-response.model           // Decoded model
+response.model           // Decoded model (`Data`/`String` are the raw body)
 response.httpResponse    // Underlying HTTPResponse
 response.data            // Raw response data
 response.request         // Original URLRequest
 response.response        // HTTPURLResponse
 ```
+
+### Raw `Data` and `String`
+
+`Call<Data>` and `Call<String>` skip JSON decoding. The model is the HTTP body
+as received — the same as Far's `GET/POST<…, Data>` / `Returns == String`.
+
+```swift
+// Binary or opaque JSON you will parse yourself
+let data = try await Call.data()
+    .path("/v1/history-messages")
+    .query(["uid": 1])
+    .fetch()
+
+// Plain text (not a JSON string value)
+let zen = try await Call.string()
+    .path("/zen")
+    .fetch()
+```
+
+Use `Call.empty()` when the body should be discarded. Use a `Decodable` model
+when the body is JSON you want Iris to decode.
 
 ### Response Mapping
 

@@ -15,6 +15,9 @@ import Foundation
 /// of a network request in a single, fluent chain. This eliminates the need for
 /// separate enum cases or scattered configuration.
 ///
+/// Use a `Decodable` model for JSON, `Call.data()` for the raw body, or
+/// `Call.empty()` when the body is unused.
+///
 /// Example:
 /// ```swift
 /// // Define API endpoints as static factory methods
@@ -596,11 +599,38 @@ public extension Call where ResponseType == Empty {
     /// Creates a request that doesn't expect a response model.
     ///
     /// Use this for requests where the response body is not needed
-    /// or is empty (e.g., DELETE requests).
+    /// or is empty (e.g., DELETE requests). The body is discarded.
+    /// For the raw bytes, use `Call.data()` instead.
     ///
     /// - Returns: A new call with `Empty` response type.
     static func empty() -> Call<Empty> {
         Call<Empty>()
+    }
+}
+
+public extension Call where ResponseType == Data {
+    
+    /// Creates a request that returns the raw response body.
+    ///
+    /// The body is not JSON-decoded. Use this for binary payloads, opaque
+    /// JSON you will parse yourself, or APIs that only need a success body.
+    ///
+    /// - Returns: A new call whose model is the raw `Data`.
+    static func data() -> Call<Data> {
+        Call<Data>()
+    }
+}
+
+public extension Call where ResponseType == String {
+    
+    /// Creates a request that returns the response body as UTF-8 text.
+    ///
+    /// The body is not JSON-decoded. A JSON string value keeps its quotes;
+    /// use a `Decodable` model if you need JSON string decoding.
+    ///
+    /// - Returns: A new call whose model is the UTF-8 `String`.
+    static func string() -> Call<String> {
+        Call<String>()
     }
 }
 
@@ -609,7 +639,8 @@ public extension Call where ResponseType == Empty {
 /// A type representing an empty response.
 ///
 /// Use `Empty` as the response type for requests that don't return a body
-/// or when you don't need to parse the response.
+/// or when you don't need to parse the response. The body is ignored.
+/// Use `Call<Data>` when you need the raw bytes.
 
 /// A type that accepts any JSON response without parsing.
 public struct Empty: Decodable {

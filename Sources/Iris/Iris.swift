@@ -165,6 +165,9 @@ public struct Iris {
     
     /// Decodes the response data into the specified model type.
     ///
+    /// `Empty` skips decoding. `Data` and `String` use the raw HTTP body
+    /// rather than JSON (`HTTPResponse.map`).
+    ///
     /// - Parameters:
     ///   - type: The type to decode the response into.
     ///   - rawResponse: The HTTP response containing the data to decode.

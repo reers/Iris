@@ -29,6 +29,51 @@ final class ResponseTests: XCTestCase {
         XCTAssertEqual(response.model.id, 1)
     }
     
+    func testMapDataReturnsRawBody() throws {
+        let jsonData = #"{"ok":true}"#.data(using: .utf8)!
+        let response = HTTPResponse(statusCode: 200, data: jsonData)
+        
+        XCTAssertEqual(try response.map(Data.self), jsonData)
+    }
+    
+    func testMapDataReturnsEmptyBody() throws {
+        let response = HTTPResponse(statusCode: 204, data: Data())
+        XCTAssertEqual(try response.map(Data.self), Data())
+    }
+    
+    func testMapStringReturnsUTF8Body() throws {
+        let body = "not-json"
+        let response = HTTPResponse(statusCode: 200, data: body.data(using: .utf8)!)
+        
+        XCTAssertEqual(try response.map(String.self), body)
+    }
+    
+    func testMapStringAtKeyPathExtractsJSONString() throws {
+        let jsonData = #"{"msg":"hello"}"#.data(using: .utf8)!
+        let response = HTTPResponse(statusCode: 200, data: jsonData)
+        
+        XCTAssertEqual(try response.map(String.self, atKeyPath: "msg"), "hello")
+    }
+    
+    func testMapDataAtKeyPathStillUsesJSON() throws {
+        let jsonData = #"{"payload":{"n":1}}"#.data(using: .utf8)!
+        let response = HTTPResponse(statusCode: 200, data: jsonData)
+        
+        let nested = try response.map(Data.self, atKeyPath: "payload")
+        let object = try JSONSerialization.jsonObject(with: nested) as? [String: Any]
+        XCTAssertEqual((object?["n"] as? NSNumber)?.intValue, 1)
+    }
+    
+    func testMapStringThrowsOnInvalidUTF8() {
+        let response = HTTPResponse(statusCode: 200, data: Data([0xFF, 0xFE]))
+        XCTAssertThrowsError(try response.map(String.self)) { error in
+            guard case IrisError.stringMapping = error else {
+                XCTFail("Expected stringMapping error")
+                return
+            }
+        }
+    }
+    
     // MARK: - Status Code Filter Tests
     
     func testFilterSuccessfulStatusCodesSucceeds() throws {
