@@ -46,6 +46,53 @@ private final class AlamofireRequestCancellationToken {
     }
 }
 
+/// Accumulates streamed body fragments and resumes the request continuation once.
+///
+/// Alamofire may deliver `stream` and `complete` events on a concurrent queue, so
+/// `chunks` and `didFinish` are guarded by `os_unfair_lock`. `@unchecked Sendable`
+/// is valid because every mutable field is accessed only while that lock is held,
+/// and `complete` resumes the continuation outside the lock.
+private final class StreamAccumulation: @unchecked Sendable {
+    private let lock: os_unfair_lock_t
+    private var chunks = Data()
+    private var didFinish = false
+    
+    init() {
+        lock = .allocate(capacity: 1)
+        lock.initialize(to: os_unfair_lock_s())
+    }
+    
+    deinit {
+        lock.deinitialize(count: 1)
+        lock.deallocate()
+    }
+    
+    func append(_ data: Data) {
+        os_unfair_lock_lock(lock)
+        chunks.append(data)
+        os_unfair_lock_unlock(lock)
+    }
+    
+    func snapshot() -> Data {
+        os_unfair_lock_lock(lock)
+        let data = chunks
+        os_unfair_lock_unlock(lock)
+        return data
+    }
+    
+    func complete(
+        _ result: Result<HTTPResponse, IrisError>,
+        continuation: CheckedContinuation<Result<HTTPResponse, IrisError>, Never>
+    ) {
+        os_unfair_lock_lock(lock)
+        let alreadyFinished = didFinish
+        didFinish = true
+        os_unfair_lock_unlock(lock)
+        guard !alreadyFinished else { return }
+        continuation.resume(returning: result)
+    }
+}
+
 /// The core networking struct of Iris.
 ///
 /// Iris provides a modern, type-safe networking layer built on top of Alamofire,
@@ -156,7 +203,12 @@ public struct Iris {
             networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request)
             
         default:
-            networkResult = await performDataRequest(urlRequest, interceptor: interceptor, request: request)
+            // Data tasks only. File upload/download ignore `stream()`.
+            if request.isStream {
+                networkResult = await performStream(urlRequest, interceptor: interceptor, request: request)
+            } else {
+                networkResult = await performDataRequest(urlRequest, interceptor: interceptor, request: request)
+            }
         }
         
         // 6-8. Notify plugins, process, then decode or throw
@@ -289,6 +341,52 @@ public struct Iris {
         return .failure(.underlying(error, rawResponse))
     }
     
+    /// Attaches Alamofire progress closures as siblings of the response handler.
+    ///
+    /// Do not sequence `for await progress` before `await send()` — that deadlocks
+    /// because Alamofire only emits progress after a response serializer is attached.
+    private static func attachProgress<Model: Decodable>(_ afRequest: AFRequest, from request: Call<Model>) {
+        if let handler = request.uploadProgressHandler {
+            afRequest.uploadProgress(queue: request.uploadProgressQueue, closure: handler)
+        }
+        if let handler = request.downloadProgressHandler {
+            afRequest.downloadProgress(queue: request.downloadProgressQueue, closure: handler)
+        }
+    }
+    
+    /// Delivers stub-mode sidecars before `finish()` returns.
+    ///
+    /// There is no byte traffic in stub mode, so upload/download progress is reported
+    /// as already complete (`fractionCompleted == 1`). Streaming stubs emit the sample
+    /// body as a single chunk. Handlers run on their configured queues and complete
+    /// before `send()` returns, matching live-request ordering relative to completion.
+    private static func deliverStubCallbacks<Model: Decodable>(for request: Call<Model>, data: Data) {
+        if let handler = request.uploadProgressHandler {
+            let progress = Progress(totalUnitCount: 1)
+            progress.completedUnitCount = 1
+            invokeSynchronously(request.uploadProgressQueue) { handler(progress) }
+        }
+        if let handler = request.downloadProgressHandler {
+            let progress = Progress(totalUnitCount: 1)
+            progress.completedUnitCount = 1
+            invokeSynchronously(request.downloadProgressQueue) { handler(progress) }
+        }
+        if let handler = request.chunkHandler, request.isStream {
+            invokeSynchronously(request.chunkQueue) { handler(data) }
+        }
+    }
+    
+    /// Runs `work` on `queue` and waits for it.
+    ///
+    /// `DispatchQueue.main.sync` from the main thread deadlocks, so that case runs inline.
+    private static func invokeSynchronously(_ queue: DispatchQueue, _ work: () -> Void) {
+        if Thread.isMainThread && queue === DispatchQueue.main {
+            work()
+        } else {
+            queue.sync(execute: work)
+        }
+    }
+    
     private static func mapDataResponse(_ afResponse: AFDataResponse<Data>) -> Result<HTTPResponse, IrisError> {
         switch afResponse.result {
         case .success(let data):
@@ -343,6 +441,7 @@ public struct Iris {
                 }
                 
                 cancellationToken.setRequest(afRequest)
+                attachProgress(afRequest, from: request)
                 
                 afRequest.responseData { afResponse in
                     continuation.resume(returning: mapDataResponse(afResponse))
@@ -369,9 +468,76 @@ public struct Iris {
                 }
                 
                 cancellationToken.setRequest(afRequest)
+                attachProgress(afRequest, from: request)
                 
                 afRequest.responseData { afResponse in
                     continuation.resume(returning: mapDownloadResponse(afResponse))
+                }
+            }
+        } onCancel: {
+            cancellationToken.cancel()
+        }
+    }
+    
+    /// Streams the HTTP response body as chunks, then finishes with the concatenated data.
+    ///
+    /// Each fragment is forwarded to `onChunk` on `chunkQueue`. The concatenated body
+    /// becomes the terminal `HTTPResponse` so plugins `didReceive` / `process` and
+    /// `onComplete` still run once in `finish()`, same as a buffered data request.
+    /// `automaticallyCancelOnStreamError` is false so transport errors still map through
+    /// `mapNetworkResult` instead of cancelling the Alamofire request first.
+    private static func performStream<Model: Decodable>(
+        _ urlRequest: URLRequest,
+        interceptor: IrisCallInterceptor,
+        request: Call<Model>
+    ) async -> Result<HTTPResponse, IrisError> {
+        let cancellationToken = AlamofireRequestCancellationToken()
+        
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let accumulation = StreamAccumulation()
+                let streamRequest = configuration.session.streamRequest(
+                    urlRequest,
+                    automaticallyCancelOnStreamError: false,
+                    interceptor: interceptor
+                )
+                attachProgress(streamRequest, from: request)
+                cancellationToken.setRequest(streamRequest)
+                
+                let chunkHandler = request.chunkHandler
+                let validationCodes = request.validationType.statusCodes
+                
+                streamRequest.responseStream(on: request.chunkQueue) { stream in
+                    switch stream.event {
+                    case .stream(.success(let data)):
+                        accumulation.append(data)
+                        chunkHandler?(data)
+                    case .complete(let completion):
+                        let data = accumulation.snapshot()
+                        if let error = completion.error {
+                            accumulation.complete(
+                                mapNetworkResult(
+                                    data: data,
+                                    request: completion.request,
+                                    response: completion.response,
+                                    error: error
+                                ),
+                                continuation: continuation
+                            )
+                        } else {
+                            let httpResponse = HTTPResponse(
+                                statusCode: completion.response?.statusCode ?? 0,
+                                data: data,
+                                request: completion.request,
+                                response: completion.response
+                            )
+                            if !validationCodes.isEmpty && !validationCodes.contains(httpResponse.statusCode) {
+                                accumulation.complete(.failure(.statusCode(httpResponse)), continuation: continuation)
+                            } else {
+                                accumulation.complete(.success(httpResponse), continuation: continuation)
+                            }
+                        }
+                    }
                 }
             }
         } onCancel: {
@@ -523,8 +689,10 @@ public struct Iris {
         configuration.plugins.forEach { $0.willSend(callType, target: request) }
         
         let result: Result<HTTPResponse, IrisError>
+        let stubData: Data
         switch request.sampleResponseClosure() {
         case .networkResponse(let statusCode, let data):
+            stubData = data
             let rawResponse = HTTPResponse(statusCode: statusCode, data: data)
             if request.validationType.statusCodes.isEmpty || request.validationType.statusCodes.contains(statusCode) {
                 result = .success(rawResponse)
@@ -533,6 +701,7 @@ public struct Iris {
             }
             
         case .response(let response, let data):
+            stubData = data
             let rawResponse = HTTPResponse(
                 statusCode: response.statusCode,
                 data: data,
@@ -546,9 +715,11 @@ public struct Iris {
             }
             
         case .networkError(let error):
+            stubData = Data()
             result = .failure(.underlying(error, nil))
         }
         
+        deliverStubCallbacks(for: request, data: stubData)
         return try finish(result, request: request)
     }
 }

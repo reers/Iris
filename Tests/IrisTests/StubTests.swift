@@ -271,6 +271,106 @@ final class StubTests: XCTestCase {
         XCTAssertEqual(text, jsonObject)
     }
     
+    func testSendCompletionDeliversSuccess() {
+        let expectation = XCTestExpectation(description: "send completion success")
+        let sampleData = "{\"login\": \"testuser\", \"id\": 123}".data(using: .utf8)!
+        
+        Call<GitHubUser>()
+            .path("/users/testuser")
+            .stub(sampleData)
+            .send { result in
+                switch result {
+                case .success(let response):
+                    XCTAssertEqual(response.model.login, "testuser")
+                    XCTAssertEqual(response.model.id, 123)
+                case .failure(let error):
+                    XCTFail("Unexpected failure: \(error)")
+                }
+                expectation.fulfill()
+            }
+        
+        wait(for: [expectation], timeout: 1)
+    }
+    
+    func testFetchCompletionDeliversModel() {
+        let expectation = XCTestExpectation(description: "fetch completion success")
+        let sampleData = "{\"login\": \"testuser\", \"id\": 123}".data(using: .utf8)!
+        
+        Call<GitHubUser>()
+            .path("/users/testuser")
+            .stub(sampleData)
+            .fetch { result in
+                switch result {
+                case .success(let user):
+                    XCTAssertEqual(user.login, "testuser")
+                case .failure(let error):
+                    XCTFail("Unexpected failure: \(error)")
+                }
+                expectation.fulfill()
+            }
+        
+        wait(for: [expectation], timeout: 1)
+    }
+    
+    func testSendCompletionDeliversFailure() {
+        let expectation = XCTestExpectation(description: "send completion failure")
+        
+        Call<GitHubUser>()
+            .path("/users/testuser")
+            .validateSuccessCodes()
+            .stub(statusCode: 500, data: Data())
+            .send { result in
+                if case .failure(.statusCode(let response)) = result {
+                    XCTAssertEqual(response.statusCode, 500)
+                } else {
+                    XCTFail("Expected statusCode failure")
+                }
+                expectation.fulfill()
+            }
+        
+        wait(for: [expectation], timeout: 1)
+    }
+    
+    func testStubUploadProgressFiresBeforeCompletion() {
+        let progressExpectation = XCTestExpectation(description: "upload progress")
+        let completionExpectation = XCTestExpectation(description: "send completion")
+        
+        Call.data()
+            .path("/v1/media")
+            .stub(Data([0x01]))
+            .onUploadProgress { progress in
+                XCTAssertEqual(progress.fractionCompleted, 1)
+                progressExpectation.fulfill()
+            }
+            .send { result in
+                XCTAssertNotNil(try? result.get())
+                completionExpectation.fulfill()
+            }
+        
+        wait(for: [progressExpectation, completionExpectation], timeout: 1)
+    }
+    
+    func testStubStreamDeliversChunkThenCompletion() {
+        let chunkExpectation = XCTestExpectation(description: "chunk")
+        let completionExpectation = XCTestExpectation(description: "completion")
+        let payload = #"{"token":"hi"}"#.data(using: .utf8)!
+        
+        Call.data()
+            .path("/v1/ai")
+            .stub(payload)
+            .stream()
+            .onChunk { data in
+                XCTAssertEqual(data, payload)
+                chunkExpectation.fulfill()
+            }
+            .send { result in
+                XCTAssertEqual(try? result.get().model, payload)
+                completionExpectation.fulfill()
+            }
+        
+        wait(for: [chunkExpectation, completionExpectation], timeout: 1)
+    }
+    
     // MARK: - Array Response Tests
     
     func testArrayResponseStub() async throws {

@@ -112,10 +112,36 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// Stub behavior that overrides the global configuration.
     public var stubBehavior: StubBehavior?
     
-    /// Completion handler for processing decoded Alamofire response.
+    /// When `true`, a data task consumes the body as chunks instead of one buffer.
     ///
-    /// This handler is called after the request completes and response is decoded,
-    /// providing access to the typed response for generic processing like caching or database storage.
+    /// File upload and file-download tasks ignore this flag. Pair with `onChunk`
+    /// for incremental delivery; the concatenated body is still decoded in `finish()`.
+    public var isStream: Bool = false
+    
+    /// Upload progress sidecar. Does not start the request; pair with `send()` / `fetch()`.
+    /// Invoked on `uploadProgressQueue`.
+    var uploadProgressHandler: ((Progress) -> Void)?
+    
+    /// Queue for `uploadProgressHandler`. Defaults to the main queue.
+    var uploadProgressQueue: DispatchQueue = .main
+    
+    /// Download progress sidecar. Does not start the request; pair with `send()` / `fetch()`.
+    /// Invoked on `downloadProgressQueue`.
+    var downloadProgressHandler: ((Progress) -> Void)?
+    
+    /// Queue for `downloadProgressHandler`. Defaults to the main queue.
+    var downloadProgressQueue: DispatchQueue = .main
+    
+    /// Stream chunk sidecar. Invoked on `chunkQueue` for each body fragment when `isStream` is true.
+    var chunkHandler: ((Data) -> Void)?
+    
+    /// Queue for `chunkHandler`. Defaults to the main queue.
+    var chunkQueue: DispatchQueue = .main
+    
+    /// Side-channel handler invoked from `finish()` after decode, before `send()` returns.
+    ///
+    /// Does not start the request. Use `onComplete(_:)` for cache / database / shared
+    /// error UI. Call-site results belong on `send(on:completion:)` / `fetch(on:completion:)`.
     public var onCompleteHandler: (@Sendable (AFDataResponse<ResponseType>) -> Void)?
     
     // MARK: - Initialization
@@ -460,13 +486,91 @@ public struct Call<ResponseType: Decodable>: TargetType {
         return request
     }
     
-    /// Sets a completion handler for processing decoded Alamofire response.
+    /// Observes upload progress while the request is in flight.
     ///
-    /// Use this for generic response processing logic that applies across requests,
-    /// such as storing to database, caching results, or showing error messages.
+    /// This is a sidecar on the recipe, not an execution method. Attach it before
+    /// `send()` / `fetch()` (or their completion overloads). Alamofire invokes the
+    /// handler on `queue` as bytes are sent. When `Content-Length` is missing,
+    /// `fractionCompleted` may stay `0`.
     ///
-    /// This handler is called after the request completes and response is decoded,
-    /// providing the typed model for direct processing.
+    /// - Parameters:
+    ///   - queue: The queue for progress callbacks. Defaults to the main queue.
+    ///   - handler: Called with Foundation `Progress`.
+    /// - Returns: A new call with the progress handler.
+    public func onUploadProgress(
+        on queue: DispatchQueue = .main,
+        _ handler: @escaping (Progress) -> Void
+    ) -> Call<ResponseType> {
+        var request = self
+        request.uploadProgressHandler = handler
+        request.uploadProgressQueue = queue
+        return request
+    }
+    
+    /// Observes download progress while the request is in flight.
+    ///
+    /// This is a sidecar on the recipe, not an execution method. Attach it before
+    /// `send()` / `fetch()` (or their completion overloads). When `Content-Length`
+    /// is missing, `fractionCompleted` may stay `0`.
+    ///
+    /// - Parameters:
+    ///   - queue: The queue for progress callbacks. Defaults to the main queue.
+    ///   - handler: Called with Foundation `Progress`.
+    /// - Returns: A new call with the progress handler.
+    public func onDownloadProgress(
+        on queue: DispatchQueue = .main,
+        _ handler: @escaping (Progress) -> Void
+    ) -> Call<ResponseType> {
+        var request = self
+        request.downloadProgressHandler = handler
+        request.downloadProgressQueue = queue
+        return request
+    }
+    
+    /// Receives each chunk of a streaming HTTP response body.
+    ///
+    /// Combine with `stream()`. This is a sidecar, not an execution method: the
+    /// terminal result still arrives via `send()` / `fetch()` (or their completion
+    /// overloads). Plugins and `onComplete` still run once at the end, on the
+    /// concatenated body.
+    ///
+    /// - Parameters:
+    ///   - queue: The queue for chunk callbacks. Defaults to the main queue.
+    ///   - handler: Called with each `Data` fragment.
+    /// - Returns: A new call with the chunk handler.
+    public func onChunk(
+        on queue: DispatchQueue = .main,
+        _ handler: @escaping (Data) -> Void
+    ) -> Call<ResponseType> {
+        var request = self
+        request.chunkHandler = handler
+        request.chunkQueue = queue
+        return request
+    }
+    
+    /// Consumes the response body as a stream of chunks instead of one buffer.
+    ///
+    /// Has no effect on file upload or file-download tasks. Chunks are delivered
+    /// to `onChunk`. After the stream ends, `Empty` discards the concatenated body,
+    /// `Data` / `String` keep it as the raw model, and other `Decodable` types
+    /// JSON-decode the concatenation.
+    ///
+    /// - Returns: A new call marked for streaming.
+    public func stream() -> Call<ResponseType> {
+        var request = self
+        request.isStream = true
+        return request
+    }
+    
+    /// Side-channel hook invoked from `finish()` after decode, before `send()` returns.
+    ///
+    /// Use this for generic processing that applies across requests (cache, database,
+    /// shared error UI). It does **not** start the request and is not a substitute
+    /// for `send(on:completion:)`.
+    ///
+    /// If both are chained, both fire: `onComplete` first on the current thread with
+    /// `AFDataResponse`, then the completion wrapper on its queue with
+    /// `Result<Response, IrisError>`.
     ///
     /// Example:
     /// ```swift
@@ -589,6 +693,57 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Throws: `IrisError` if the request fails.
     public func fetch() async throws -> ResponseType {
         return try await Iris.fetch(self)
+    }
+    
+    /// Sends the request and delivers the result to a completion handler.
+    ///
+    /// Thin wrapper over `send()`. Use this to migrate callback-style call sites
+    /// without wrapping each one in `Task { try await }`. Cancel the returned
+    /// `Task` to cancel the underlying request.
+    ///
+    /// Distinct from `onComplete`, which is a sidecar on the recipe and never
+    /// starts work. This method is the execution entry; `onComplete` still runs
+    /// inside `finish()` if both are set.
+    ///
+    /// - Parameters:
+    ///   - queue: The queue for `completion`. Defaults to the main queue.
+    ///   - completion: Called once with success or `IrisError`.
+    /// - Returns: The unstructured task running the request.
+    @discardableResult
+    public func send(
+        on queue: DispatchQueue = .main,
+        completion: @escaping @Sendable (Result<Response<ResponseType>, IrisError>) -> Void
+    ) -> Task<Void, Never> {
+        Task {
+            let result: Result<Response<ResponseType>, IrisError>
+            do {
+                result = .success(try await send())
+            } catch let error as IrisError {
+                result = .failure(error)
+            } catch {
+                result = .failure(.underlying(error, nil))
+            }
+            queue.async { completion(result) }
+        }
+    }
+    
+    /// Sends the request and delivers the decoded model to a completion handler.
+    ///
+    /// Thin wrapper over `fetch()`. Same execution model as `send(on:completion:)`;
+    /// the success value is `response.model` instead of the full `Response`.
+    ///
+    /// - Parameters:
+    ///   - queue: The queue for `completion`. Defaults to the main queue.
+    ///   - completion: Called once with the model or `IrisError`.
+    /// - Returns: The unstructured task running the request.
+    @discardableResult
+    public func fetch(
+        on queue: DispatchQueue = .main,
+        completion: @escaping @Sendable (Result<ResponseType, IrisError>) -> Void
+    ) -> Task<Void, Never> {
+        send(on: queue) { result in
+            completion(result.map(\.model))
+        }
     }
 }
 

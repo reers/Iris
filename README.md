@@ -16,6 +16,9 @@ Iris is a networking library built on top of [Alamofire](https://github.com/Alam
 - **Chainable API**: Build requests using a fluent, chainable syntax
 - **Type-Safe**: Generic response types ensure compile-time safety
 - **Async/Await**: Modern Swift concurrency support out of the box
+- **Callbacks**: Thin `send` / `fetch` completion wrappers for existing callback call sites
+- **Progress**: Upload and download `Progress` callbacks on the same `Call` chain
+- **HTTP Streaming**: `stream()` + `onChunk` for incremental body delivery
 - **Configurable**: Global, service-scoped, and per-request configuration options
 - **Plugin System**: Intercept and modify requests/responses
 - **Stubbing**: First-class support for testing with stubbed responses
@@ -135,6 +138,36 @@ let bytes = try await Call.data()
 let text = try await Call.string()
     .path("/zen")
     .fetch()
+
+// Callback-style send — thin wrapper over send()/fetch()
+Call<User>()
+    .path("/users/1")
+    .send { result in
+        switch result {
+        case .success(let response): print(response.model.name)
+        case .failure(let error): print(error)
+        }
+    }
+
+Call<Media>()
+    .path("/v1/media")
+    .upload(multipart: parts)
+    .onUploadProgress { progress in
+        print(progress.fractionCompleted)
+    }
+    .send { result in
+        _ = try? result.get()
+    }
+
+Call.data()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .stream()
+    .onChunk { data in
+        print(String(data: data, encoding: .utf8) ?? "")
+    }
+    .send { _ in }
 ```
 
 ## Request Configuration
@@ -279,6 +312,53 @@ Call.data()
     .path("/files/document.pdf")
     .download(to: destination)
 ```
+
+### Progress
+
+```swift
+Call<Media>()
+    .path("/v1/media")
+    .upload(multipart: parts)
+    .onUploadProgress { progress in
+        print(progress.fractionCompleted)
+    }
+    .send { result in
+        _ = try? result.get()
+    }
+
+Call.data()
+    .path("/files/document.pdf")
+    .download(to: destination)
+    .onDownloadProgress { progress in
+        print(progress.fractionCompleted)
+    }
+    .send { _ in }
+```
+
+Progress uses Foundation `Progress`. When `Content-Length` is missing, `fractionCompleted` may stay `0`.
+
+### HTTP Streaming
+
+Mark a data request with `stream()` to receive the body in chunks. The terminal result is still delivered by `send()` / `fetch()` (or their completion overloads). Plugins `didReceive` / `process` still run once at the end, on the concatenated body.
+
+`stream()` applies to data tasks only — not file upload or file download.
+
+```swift
+Call.data()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .stream()
+    .onChunk { data in
+        print(String(data: data, encoding: .utf8) ?? "")
+    }
+    .send { result in
+        // Concatenated body as `Data`
+        _ = try? result.get().model
+    }
+```
+
+`Empty` discards the concatenated body. `Data` / `String` keep it as the raw model. Other `Decodable` types JSON-decode the concatenation.
 
 ### Validation
 

@@ -694,6 +694,19 @@ final class CallTests: XCTestCase {
         }
     }
     
+    func testProgressAndStreamCallbacksAreStored() {
+        let request = Call.data()
+            .onUploadProgress { _ in }
+            .onDownloadProgress { _ in }
+            .onChunk { _ in }
+            .stream()
+        
+        XCTAssertNotNil(request.uploadProgressHandler)
+        XCTAssertNotNil(request.downloadProgressHandler)
+        XCTAssertNotNil(request.chunkHandler)
+        XCTAssertTrue(request.isStream)
+    }
+    
     // MARK: - TargetType Conformance Tests
     
     func testTargetTypeConformance() {
