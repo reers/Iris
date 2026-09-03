@@ -682,7 +682,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A `Response<ResponseType>` containing the model and metadata.
     /// - Throws: `IrisError` if the request fails.
     public func send() async throws -> Response<ResponseType> {
-        return try await Iris.send(self)
+        try await send { try await $0.value }
     }
     
     /// Sends the request and returns the decoded model directly.
@@ -695,6 +695,37 @@ public struct Call<ResponseType: Decodable>: TargetType {
         return try await Iris.fetch(self)
     }
     
+    /// Starts the request and runs `body` with a live session.
+    ///
+    /// Progress and chunks are `AsyncSequence` sidecars on `session`. Await
+    /// `session.value` for the terminal `Response`. Distinct from
+    /// `send(on:completion:)`, which is the GCD callback overload — use
+    /// `try await send { session in ... }` so the compiler picks this one.
+    ///
+    /// Recipe sidecars (`onUploadProgress`, `onChunk`, `onComplete`) still fire
+    /// on the same probe. Prefer one style per kind of sidecar at the call site.
+    ///
+    /// ```swift
+    /// let response = try await Call<Media>()
+    ///     .upload(multipart: parts)
+    ///     .send { session in
+    ///         async let result = session.value
+    ///         for await progress in session.uploadProgress {
+    ///             print(progress.fractionCompleted)
+    ///         }
+    ///         return try await result
+    ///     }
+    /// ```
+    ///
+    /// - Parameter body: Consumes the in-flight session. Do not store `session`.
+    /// - Returns: The value returned by `body`.
+    /// - Throws: Errors from `body` or, when `body` awaits `value`, `IrisError`.
+    public func send<R>(
+        _ body: (CallSession<ResponseType>) async throws -> R
+    ) async throws -> R {
+        try await Iris.send(self, body)
+    }
+    
     /// Sends the request and delivers the result to a completion handler.
     ///
     /// Thin wrapper over `send()`. Use this to migrate callback-style call sites
@@ -702,8 +733,11 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// `Task` to cancel the underlying request.
     ///
     /// Distinct from `onComplete`, which is a sidecar on the recipe and never
-    /// starts work. This method is the execution entry; `onComplete` still runs
-    /// inside `finish()` if both are set.
+    /// starts work. This method is the GCD execution entry; `onComplete` still
+    /// runs inside `finish()` if both are set.
+    ///
+    /// Distinct from `try await send { session in }`, the concurrency scope
+    /// overload. This trailing closure takes `Result` and is not `async`.
     ///
     /// - Parameters:
     ///   - queue: The queue for `completion`. Defaults to the main queue.

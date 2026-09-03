@@ -110,14 +110,47 @@ public struct Iris {
     /// - Returns: A `Response<Model>` containing the decoded model and raw response data.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
     public static func send<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
-        // Check if stub behavior is configured
-        let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
-        if let stubBehavior = stubBehavior {
-            return try await performStub(request, behavior: stubBehavior)
+        try await send(request) { try await $0.value }
+    }
+    
+    /// Starts the request, then runs `body` with a live `CallSession`.
+    ///
+    /// Progress, chunks, and `value` are armed before `body` runs. Recipe sidecars
+    /// (`onUploadProgress`, `onChunk`, `onComplete`) still fire on the same probe.
+    /// After `body` returns, this waits for the network task so plugins run even
+    /// if `body` never awaited `value`.
+    static func send<Model: Decodable, R>(
+        _ request: Call<Model>,
+        _ body: (CallSession<Model>) async throws -> R
+    ) async throws -> R {
+        let fanout = SidecarFanout(from: request)
+        let cancellationToken = AlamofireRequestCancellationToken()
+        
+        let valueTask = Task<Response<Model>, Error> {
+            defer { fanout.finish() }
+            let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
+            if let stubBehavior {
+                return try await performStub(request, behavior: stubBehavior, fanout: fanout)
+            }
+            return try await performRequest(request, fanout: fanout, cancellationToken: cancellationToken)
         }
         
-        // Execute real network request
-        return try await performRequest(request)
+        let session = CallSession(valueTask: valueTask, fanout: fanout)
+        
+        return try await withTaskCancellationHandler {
+            do {
+                let result = try await body(session)
+                _ = await valueTask.result
+                return result
+            } catch {
+                _ = await valueTask.result
+                throw error
+            }
+        } onCancel: {
+            valueTask.cancel()
+            cancellationToken.cancel()
+            fanout.finish()
+        }
     }
     
     /// Sends a request and returns the decoded model directly.
@@ -149,7 +182,11 @@ public struct Iris {
     /// - Parameter request: The `Call` object to execute.
     /// - Returns: A `Response<Model>` containing the decoded model.
     /// - Throws: `IrisError` if any step in the request lifecycle fails.
-    private static func performRequest<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
+    private static func performRequest<Model: Decodable>(
+        _ request: Call<Model>,
+        fanout: SidecarFanout,
+        cancellationToken: AlamofireRequestCancellationToken
+    ) async throws -> Response<Model> {
         // 1. Create Endpoint
         let endpoint = try createEndpoint(from: request)
         
@@ -188,26 +225,26 @@ public struct Iris {
         
         switch request.task {
         case .uploadFile(let fileURL):
-            networkResult = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, request: request)
+            networkResult = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, request: request, fanout: fanout, cancellationToken: cancellationToken)
             
         case .uploadMultipartFormData(let formData):
-            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request)
+            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request, fanout: fanout, cancellationToken: cancellationToken)
             
         case .uploadCompositeMultipartFormData(let formData, _):
-            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request)
+            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request, fanout: fanout, cancellationToken: cancellationToken)
             
         case .downloadDestination(let destination):
-            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request)
+            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request, fanout: fanout, cancellationToken: cancellationToken)
             
         case .downloadParameters(_, _, let destination):
-            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request)
+            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request, fanout: fanout, cancellationToken: cancellationToken)
             
         default:
             // Data tasks only. File upload/download ignore `stream()`.
             if request.isStream {
-                networkResult = await performStream(urlRequest, interceptor: interceptor, request: request)
+                networkResult = await performStream(urlRequest, interceptor: interceptor, request: request, fanout: fanout, cancellationToken: cancellationToken)
             } else {
-                networkResult = await performDataRequest(urlRequest, interceptor: interceptor, request: request)
+                networkResult = await performDataRequest(urlRequest, interceptor: interceptor, request: request, fanout: fanout, cancellationToken: cancellationToken)
             }
         }
         
@@ -343,47 +380,19 @@ public struct Iris {
     
     /// Attaches Alamofire progress closures as siblings of the response handler.
     ///
-    /// Do not sequence `for await progress` before `await send()` — that deadlocks
-    /// because Alamofire only emits progress after a response serializer is attached.
-    private static func attachProgress<Model: Decodable>(_ afRequest: AFRequest, from request: Call<Model>) {
-        if let handler = request.uploadProgressHandler {
-            afRequest.uploadProgress(queue: request.uploadProgressQueue, closure: handler)
+    /// The closures feed `SidecarFanout`, which multicasts to recipe handlers and
+    /// `CallSession` streams. Always attached so `send { session in }` can observe
+    /// progress even when the recipe has no `onUploadProgress` / `onDownloadProgress`.
+    private static func attachSidecars<Model: Decodable>(
+        _ afRequest: AFRequest,
+        from request: Call<Model>,
+        fanout: SidecarFanout
+    ) {
+        afRequest.uploadProgress(queue: request.uploadProgressQueue) { progress in
+            fanout.yieldUpload(progress, handlerOnQueue: true)
         }
-        if let handler = request.downloadProgressHandler {
-            afRequest.downloadProgress(queue: request.downloadProgressQueue, closure: handler)
-        }
-    }
-    
-    /// Delivers stub-mode sidecars before `finish()` returns.
-    ///
-    /// There is no byte traffic in stub mode, so upload/download progress is reported
-    /// as already complete (`fractionCompleted == 1`). Streaming stubs emit the sample
-    /// body as a single chunk. Handlers run on their configured queues and complete
-    /// before `send()` returns, matching live-request ordering relative to completion.
-    private static func deliverStubCallbacks<Model: Decodable>(for request: Call<Model>, data: Data) {
-        if let handler = request.uploadProgressHandler {
-            let progress = Progress(totalUnitCount: 1)
-            progress.completedUnitCount = 1
-            invokeSynchronously(request.uploadProgressQueue) { handler(progress) }
-        }
-        if let handler = request.downloadProgressHandler {
-            let progress = Progress(totalUnitCount: 1)
-            progress.completedUnitCount = 1
-            invokeSynchronously(request.downloadProgressQueue) { handler(progress) }
-        }
-        if let handler = request.chunkHandler, request.isStream {
-            invokeSynchronously(request.chunkQueue) { handler(data) }
-        }
-    }
-    
-    /// Runs `work` on `queue` and waits for it.
-    ///
-    /// `DispatchQueue.main.sync` from the main thread deadlocks, so that case runs inline.
-    private static func invokeSynchronously(_ queue: DispatchQueue, _ work: () -> Void) {
-        if Thread.isMainThread && queue === DispatchQueue.main {
-            work()
-        } else {
-            queue.sync(execute: work)
+        afRequest.downloadProgress(queue: request.downloadProgressQueue) { progress in
+            fanout.yieldDownload(progress, handlerOnQueue: true)
         }
     }
     
@@ -427,10 +436,10 @@ public struct Iris {
     
     private static func performDataResponseRequest<Model: Decodable>(
         request: Call<Model>,
+        fanout: SidecarFanout,
+        cancellationToken: AlamofireRequestCancellationToken,
         buildRequest: () -> AFDataRequest
     ) async -> Result<HTTPResponse, IrisError> {
-        let cancellationToken = AlamofireRequestCancellationToken()
-        
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let validationCodes = request.validationType.statusCodes
@@ -441,7 +450,7 @@ public struct Iris {
                 }
                 
                 cancellationToken.setRequest(afRequest)
-                attachProgress(afRequest, from: request)
+                attachSidecars(afRequest, from: request, fanout: fanout)
                 
                 afRequest.responseData { afResponse in
                     continuation.resume(returning: mapDataResponse(afResponse))
@@ -454,10 +463,10 @@ public struct Iris {
     
     private static func performDownloadResponseRequest<Model: Decodable>(
         request: Call<Model>,
+        fanout: SidecarFanout,
+        cancellationToken: AlamofireRequestCancellationToken,
         buildRequest: () -> AFDownloadRequest
     ) async -> Result<HTTPResponse, IrisError> {
-        let cancellationToken = AlamofireRequestCancellationToken()
-        
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let validationCodes = request.validationType.statusCodes
@@ -468,7 +477,7 @@ public struct Iris {
                 }
                 
                 cancellationToken.setRequest(afRequest)
-                attachProgress(afRequest, from: request)
+                attachSidecars(afRequest, from: request, fanout: fanout)
                 
                 afRequest.responseData { afResponse in
                     continuation.resume(returning: mapDownloadResponse(afResponse))
@@ -489,10 +498,10 @@ public struct Iris {
     private static func performStream<Model: Decodable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
-        request: Call<Model>
+        request: Call<Model>,
+        fanout: SidecarFanout,
+        cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
-        let cancellationToken = AlamofireRequestCancellationToken()
-        
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let accumulation = StreamAccumulation()
@@ -501,17 +510,16 @@ public struct Iris {
                     automaticallyCancelOnStreamError: false,
                     interceptor: interceptor
                 )
-                attachProgress(streamRequest, from: request)
+                attachSidecars(streamRequest, from: request, fanout: fanout)
                 cancellationToken.setRequest(streamRequest)
                 
-                let chunkHandler = request.chunkHandler
                 let validationCodes = request.validationType.statusCodes
                 
                 streamRequest.responseStream(on: request.chunkQueue) { stream in
                     switch stream.event {
                     case .stream(.success(let data)):
                         accumulation.append(data)
-                        chunkHandler?(data)
+                        fanout.yieldChunk(data, handlerOnQueue: true)
                     case .complete(let completion):
                         let data = accumulation.snapshot()
                         if let error = completion.error {
@@ -590,9 +598,11 @@ public struct Iris {
     private static func performDataRequest<Model: Decodable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
-        request: Call<Model>
+        request: Call<Model>,
+        fanout: SidecarFanout,
+        cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
-        await performDataResponseRequest(request: request) {
+        await performDataResponseRequest(request: request, fanout: fanout, cancellationToken: cancellationToken) {
             configuration.session.request(urlRequest, interceptor: interceptor)
         }
     }
@@ -609,9 +619,11 @@ public struct Iris {
         _ urlRequest: URLRequest,
         fileURL: URL,
         interceptor: IrisCallInterceptor,
-        request: Call<Model>
+        request: Call<Model>,
+        fanout: SidecarFanout,
+        cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
-        await performDataResponseRequest(request: request) {
+        await performDataResponseRequest(request: request, fanout: fanout, cancellationToken: cancellationToken) {
             configuration.session.upload(fileURL, with: urlRequest, interceptor: interceptor)
         }
     }
@@ -628,9 +640,11 @@ public struct Iris {
         _ urlRequest: URLRequest,
         formData: MultipartFormData,
         interceptor: IrisCallInterceptor,
-        request: Call<Model>
+        request: Call<Model>,
+        fanout: SidecarFanout,
+        cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
-        await performDataResponseRequest(request: request) {
+        await performDataResponseRequest(request: request, fanout: fanout, cancellationToken: cancellationToken) {
             let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
             afFormData.applyMoyaMultipartFormData(formData)
             return configuration.session.upload(multipartFormData: afFormData, with: urlRequest, interceptor: interceptor)
@@ -649,9 +663,11 @@ public struct Iris {
         _ urlRequest: URLRequest,
         destination: @escaping DownloadDestination,
         interceptor: IrisCallInterceptor,
-        request: Call<Model>
+        request: Call<Model>,
+        fanout: SidecarFanout,
+        cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
-        await performDownloadResponseRequest(request: request) {
+        await performDownloadResponseRequest(request: request, fanout: fanout, cancellationToken: cancellationToken) {
             configuration.session.download(urlRequest, interceptor: interceptor, to: destination)
         }
     }
@@ -669,7 +685,8 @@ public struct Iris {
     /// - Throws: `IrisError` if decoding the stub data fails.
     private static func performStub<Model: Decodable>(
         _ request: Call<Model>,
-        behavior: StubBehavior
+        behavior: StubBehavior,
+        fanout: SidecarFanout
     ) async throws -> Response<Model> {
         // Calculate delay
         let delay: TimeInterval
@@ -719,7 +736,7 @@ public struct Iris {
             result = .failure(.underlying(error, nil))
         }
         
-        deliverStubCallbacks(for: request, data: stubData)
+        fanout.deliverStub(data: stubData)
         return try finish(result, request: request)
     }
 }

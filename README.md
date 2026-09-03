@@ -17,8 +17,8 @@ Iris is a networking library built on top of [Alamofire](https://github.com/Alam
 - **Type-Safe**: Generic response types ensure compile-time safety
 - **Async/Await**: Modern Swift concurrency support out of the box
 - **Callbacks**: Thin `send` / `fetch` completion wrappers for existing callback call sites
-- **Progress**: Upload and download `Progress` callbacks on the same `Call` chain
-- **HTTP Streaming**: `stream()` + `onChunk` for incremental body delivery
+- **Progress**: Upload and download `Progress` as recipe handlers or `send { session in }` streams
+- **HTTP Streaming**: `stream()` with `onChunk` or `session.chunks`
 - **Configurable**: Global, service-scoped, and per-request configuration options
 - **Plugin System**: Intercept and modify requests/responses
 - **Stubbing**: First-class support for testing with stubbed responses
@@ -168,6 +168,18 @@ Call.data()
         print(String(data: data, encoding: .utf8) ?? "")
     }
     .send { _ in }
+
+// Concurrency sidecars — live session does not escape the closure
+let media = try await Call<Media>()
+    .path("/v1/media")
+    .upload(multipart: parts)
+    .send { session in
+        async let result = session.value
+        for await progress in session.uploadProgress {
+            print(progress.fractionCompleted)
+        }
+        return try await result
+    }
 ```
 
 ## Request Configuration
@@ -337,6 +349,23 @@ Call.data()
 
 Progress uses Foundation `Progress`. When `Content-Length` is missing, `fractionCompleted` may stay `0`.
 
+In an `async` context, observe the same probe without a handler:
+
+```swift
+let response = try await Call<Media>()
+    .path("/v1/media")
+    .upload(multipart: parts)
+    .send { session in
+        async let result = session.value
+        for await progress in session.uploadProgress {
+            print(progress.fractionCompleted)
+        }
+        return try await result
+    }
+```
+
+`onUploadProgress` and `for await session.uploadProgress` share one probe. Use one style per call site.
+
 ### HTTP Streaming
 
 Mark a data request with `stream()` to receive the body in chunks. The terminal result is still delivered by `send()` / `fetch()` (or their completion overloads). Plugins `didReceive` / `process` still run once at the end, on the concatenated body.
@@ -359,6 +388,23 @@ Call.data()
 ```
 
 `Empty` discards the concatenated body. `Data` / `String` keep it as the raw model. Other `Decodable` types JSON-decode the concatenation.
+
+The same chunks are available on the live session:
+
+```swift
+let response = try await Call.data()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .stream()
+    .send { session in
+        async let result = session.value
+        for await chunk in session.chunks {
+            print(String(data: chunk, encoding: .utf8) ?? "")
+        }
+        return try await result
+    }
+```
 
 ### Validation
 
