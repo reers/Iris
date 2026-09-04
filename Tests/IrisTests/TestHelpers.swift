@@ -343,6 +343,10 @@ final class StubURLProtocol: URLProtocol {
     
     static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
     static var responseDelay: TimeInterval = 0
+    /// When greater than 0, the body is delivered as successive `didLoad` callbacks.
+    static var bodyChunkSize: Int = 0
+    /// Pause between body chunks so Alamofire can observe progress and stream events.
+    static var bodyChunkInterval: TimeInterval = 0
     static var onStartLoading: (() -> Void)?
     static var onStopLoading: (() -> Void)?
     
@@ -364,11 +368,9 @@ final class StubURLProtocol: URLProtocol {
             guard let self else { return }
             do {
                 let (response, data) = try handler(request)
-                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
+                self.deliver(response: response, data: data)
             } catch {
-                client?.urlProtocol(self, didFailWithError: error)
+                self.client?.urlProtocol(self, didFailWithError: error)
             }
         }
         self.workItem = workItem
@@ -384,8 +386,37 @@ final class StubURLProtocol: URLProtocol {
     static func reset() {
         handler = nil
         responseDelay = 0
+        bodyChunkSize = 0
+        bodyChunkInterval = 0
         onStartLoading = nil
         onStopLoading = nil
+    }
+    
+    private func deliver(response: HTTPURLResponse, data: Data) {
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        
+        let chunkSize = Self.bodyChunkSize
+        if chunkSize <= 0 || data.isEmpty {
+            if !data.isEmpty {
+                client?.urlProtocol(self, didLoad: data)
+            }
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        
+        var offset = 0
+        while offset < data.count {
+            if workItem?.isCancelled == true { return }
+            let end = min(offset + chunkSize, data.count)
+            client?.urlProtocol(self, didLoad: data.subdata(in: offset..<end))
+            offset = end
+            if offset < data.count, Self.bodyChunkInterval > 0 {
+                Thread.sleep(forTimeInterval: Self.bodyChunkInterval)
+            }
+        }
+        
+        if workItem?.isCancelled == true { return }
+        client?.urlProtocolDidFinishLoading(self)
     }
 }
 
