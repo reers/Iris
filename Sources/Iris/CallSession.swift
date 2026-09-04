@@ -20,11 +20,11 @@ import os.lock
 public struct CallSession<ResponseType: Decodable> {
     
     private let valueTask: Task<Response<ResponseType>, Error>
-    private let fanout: SidecarFanout
+    private let broadcaster: EventBroadcaster
     
-    init(valueTask: Task<Response<ResponseType>, Error>, fanout: SidecarFanout) {
+    init(valueTask: Task<Response<ResponseType>, Error>, broadcaster: EventBroadcaster) {
         self.valueTask = valueTask
-        self.fanout = fanout
+        self.broadcaster = broadcaster
     }
     
     /// Decoded terminal result. Safe to await more than once; plugins and
@@ -37,19 +37,19 @@ public struct CallSession<ResponseType: Decodable> {
     
     /// Upload progress. Finishes when the request completes, fails, or is cancelled.
     public var uploadProgress: AsyncStream<Progress> {
-        fanout.uploadProgress
+        broadcaster.uploadProgress
     }
     
     /// Download progress. Finishes when the request completes, fails, or is cancelled.
     public var downloadProgress: AsyncStream<Progress> {
-        fanout.downloadProgress
+        broadcaster.downloadProgress
     }
     
     /// Body fragments for `stream()` data tasks. Empty and immediately finished
     /// when the request is not a stream. The concatenated body is still decoded
     /// as `value`.
     public var chunks: AsyncStream<Data> {
-        fanout.chunks
+        broadcaster.chunks
     }
 }
 
@@ -57,11 +57,11 @@ public struct CallSession<ResponseType: Decodable> {
 /// `CallSession` streams.
 ///
 /// Alamofire keeps a single `uploadProgress` closure. This type is the Iris-side
-/// fan-out so `onUploadProgress` and `for await session.uploadProgress` can
+/// broadcast so `onUploadProgress` and `for await session.uploadProgress` can
 /// coexist. `@unchecked Sendable` is valid because every mutable field is
 /// accessed only while `lock` is held, and continuations are yielded or finished
 /// outside the lock.
-final class SidecarFanout: @unchecked Sendable {
+final class EventBroadcaster: @unchecked Sendable {
     
     private let lock: os_unfair_lock_t
     private var didFinish = false
@@ -206,8 +206,8 @@ final class SidecarFanout: @unchecked Sendable {
     
     /// Returns current subscribers when the event was accepted, or `nil` if already finished.
     private func appendAndCopy<Element>(
-        buffer: (SidecarFanout) -> Void,
-        subscribers: (SidecarFanout) -> [AsyncStream<Element>.Continuation]
+        buffer: (EventBroadcaster) -> Void,
+        subscribers: (EventBroadcaster) -> [AsyncStream<Element>.Continuation]
     ) -> [AsyncStream<Element>.Continuation]? {
         os_unfair_lock_lock(lock)
         if didFinish {
