@@ -371,6 +371,104 @@ final class StubTests: XCTestCase {
         wait(for: [chunkExpectation, completionExpectation], timeout: 1)
     }
     
+    func testSendScopeReturnsValue() async throws {
+        let sampleData = "{\"login\": \"testuser\", \"id\": 123}".data(using: .utf8)!
+        
+        let response = try await Call<GitHubUser>()
+            .path("/users/testuser")
+            .stub(sampleData)
+            .send { _ in }
+        
+        XCTAssertEqual(response.model.login, "testuser")
+        XCTAssertEqual(response.model.id, 123)
+    }
+    
+    func testSendScopeProgressThenValue() async throws {
+        var fractions: [Double] = []
+        
+        let response = try await Call.data()
+            .path("/v1/media")
+            .stub(Data([0x01]))
+            .send { session in
+                for await progress in session.uploadProgress {
+                    fractions.append(progress.fractionCompleted)
+                }
+            }
+        
+        XCTAssertEqual(fractions, [1])
+        XCTAssertEqual(response.model, Data([0x01]))
+    }
+    
+    func testSendScopeProgressAlongsideValue() async throws {
+        var fractions: [Double] = []
+        
+        let response = try await Call.data()
+            .path("/v1/media")
+            .stub(Data([0x01]))
+            .send { session in
+                async let _ = session.value
+                for await progress in session.uploadProgress {
+                    fractions.append(progress.fractionCompleted)
+                }
+            }
+        
+        XCTAssertEqual(fractions, [1])
+        XCTAssertEqual(response.model, Data([0x01]))
+    }
+    
+    func testSendScopeChunksThenValue() async throws {
+        let payload = #"{"token":"hi"}"#.data(using: .utf8)!
+        var chunks: [Data] = []
+        
+        let response = try await Call.data()
+            .path("/v1/ai")
+            .stub(payload)
+            .stream()
+            .send { session in
+                for await chunk in session.chunks {
+                    chunks.append(chunk)
+                }
+            }
+        
+        XCTAssertEqual(chunks, [payload])
+        XCTAssertEqual(response.model, payload)
+    }
+    
+    func testSendScopeAndHandlerBothReceiveProgress() async throws {
+        let handlerCount = SendableBox(0)
+        var streamCount = 0
+        
+        _ = try await Call.data()
+            .path("/v1/media")
+            .stub(Data([0x01]))
+            .onUploadProgress { _ in
+                handlerCount.value += 1
+            }
+            .send { session in
+                for await _ in session.uploadProgress {
+                    streamCount += 1
+                }
+            }
+        
+        XCTAssertEqual(handlerCount.value, 1)
+        XCTAssertEqual(streamCount, 1)
+    }
+    
+    func testSendScopeEmptyBodyStillReturnsResponse() async throws {
+        let completeCount = SendableBox(0)
+        
+        let response = try await Call<GitHubUser>()
+            .path("/users/testuser")
+            .stub(GitHubUser(login: "testuser", id: 1))
+            .onComplete { _ in
+                completeCount.value += 1
+            }
+            .send { _ in }
+        
+        XCTAssertEqual(response.model.login, "testuser")
+        XCTAssertEqual(completeCount.value, 1)
+    }
+    
     // MARK: - Array Response Tests
     
     func testArrayResponseStub() async throws {
