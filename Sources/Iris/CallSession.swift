@@ -10,9 +10,9 @@ import os.lock
 
 /// One in-flight request, valid only inside `send { session in }`.
 ///
-/// Progress and chunks are sidecars on this session. The terminal result is
-/// `value`. Alamofire progress and response serializers are attached before the
-/// `send` body runs, so `for await` on a sidecar then `await value` does not
+/// Progress and chunks are sidecars on this session. `send` still returns
+/// `Response` after `body` finishes. Alamofire progress and response serializers
+/// are attached before the `send` body runs, so `for await` on a sidecar does not
 /// deadlock.
 ///
 /// Do not store this value. It exists so the live request does not leak out of

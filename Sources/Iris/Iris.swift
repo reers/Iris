@@ -110,19 +110,19 @@ public struct Iris {
     /// - Returns: A `Response<Model>` containing the decoded model and raw response data.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
     public static func send<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
-        try await send(request) { try await $0.value }
+        try await send(request) { _ in }
     }
     
     /// Starts the request, then runs `body` with a live `CallSession`.
     ///
-    /// Progress, chunks, and `value` are armed before `body` runs. Recipe sidecars
+    /// Progress and chunks are armed before `body` runs. Recipe sidecars
     /// (`onUploadProgress`, `onChunk`, `onComplete`) still fire on the same probe.
-    /// After `body` returns, this waits for the network task so plugins run even
-    /// if `body` never awaited `value`.
-    static func send<Model: Decodable, R>(
+    /// After `body` returns, this awaits the network task and always returns
+    /// `Response<Model>` — `body` only consumes sidecars.
+    static func send<Model: Decodable>(
         _ request: Call<Model>,
-        _ body: (CallSession<Model>) async throws -> R
-    ) async throws -> R {
+        _ body: (CallSession<Model>) async throws -> Void
+    ) async throws -> Response<Model> {
         let fanout = SidecarFanout(from: request)
         let cancellationToken = AlamofireRequestCancellationToken()
         
@@ -139,9 +139,8 @@ public struct Iris {
         
         return try await withTaskCancellationHandler {
             do {
-                let result = try await body(session)
-                _ = await valueTask.result
-                return result
+                try await body(session)
+                return try await valueTask.value
             } catch {
                 _ = await valueTask.result
                 throw error

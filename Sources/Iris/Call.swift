@@ -682,7 +682,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A `Response<ResponseType>` containing the model and metadata.
     /// - Throws: `IrisError` if the request fails.
     public func send() async throws -> Response<ResponseType> {
-        try await send { try await $0.value }
+        try await send { _ in }
     }
     
     /// Sends the request and returns the decoded model directly.
@@ -695,10 +695,10 @@ public struct Call<ResponseType: Decodable>: TargetType {
         return try await Iris.fetch(self)
     }
     
-    /// Starts the request and runs `body` with a live session.
+    /// Starts the request, runs `body` to consume sidecars, then returns the response.
     ///
-    /// Progress and chunks are `AsyncSequence` sidecars on `session`. Await
-    /// `session.value` for the terminal `Response`. Distinct from
+    /// `body` observes progress and chunks. The return value is always
+    /// `Response<ResponseType>`, matching `send()`. Distinct from
     /// `send(on:completion:)`, which is the GCD callback overload — use
     /// `try await send { session in ... }` so the compiler picks this one.
     ///
@@ -709,20 +709,18 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// let response = try await Call<Media>()
     ///     .upload(multipart: parts)
     ///     .send { session in
-    ///         async let result = session.value
     ///         for await progress in session.uploadProgress {
     ///             print(progress.fractionCompleted)
     ///         }
-    ///         return try await result
     ///     }
     /// ```
     ///
     /// - Parameter body: Consumes the in-flight session. Do not store `session`.
-    /// - Returns: The value returned by `body`.
-    /// - Throws: Errors from `body` or, when `body` awaits `value`, `IrisError`.
-    public func send<R>(
-        _ body: (CallSession<ResponseType>) async throws -> R
-    ) async throws -> R {
+    /// - Returns: The decoded `Response`.
+    /// - Throws: `IrisError` from the request, or errors thrown by `body`.
+    public func send(
+        _ body: (CallSession<ResponseType>) async throws -> Void
+    ) async throws -> Response<ResponseType> {
         try await Iris.send(self, body)
     }
     

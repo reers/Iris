@@ -174,11 +174,9 @@ let media = try await Call<Media>()
     .path("/v1/media")
     .upload(multipart: parts)
     .send { session in
-        async let result = session.value
         for await progress in session.uploadProgress {
             print(progress.fractionCompleted)
         }
-        return try await result
     }
 ```
 
@@ -356,11 +354,9 @@ let response = try await Call<Media>()
     .path("/v1/media")
     .upload(multipart: parts)
     .send { session in
-        async let result = session.value
         for await progress in session.uploadProgress {
             print(progress.fractionCompleted)
         }
-        return try await result
     }
 ```
 
@@ -398,11 +394,9 @@ let response = try await Call.data()
     .body(["prompt": "hi"])
     .stream()
     .send { session in
-        async let result = session.value
         for await chunk in session.chunks {
             print(String(data: chunk, encoding: .utf8) ?? "")
         }
-        return try await result
     }
 ```
 

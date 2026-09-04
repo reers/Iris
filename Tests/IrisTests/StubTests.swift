@@ -377,9 +377,7 @@ final class StubTests: XCTestCase {
         let response = try await Call<GitHubUser>()
             .path("/users/testuser")
             .stub(sampleData)
-            .send { session in
-                try await session.value
-            }
+            .send { _ in }
         
         XCTAssertEqual(response.model.login, "testuser")
         XCTAssertEqual(response.model.id, 123)
@@ -395,7 +393,6 @@ final class StubTests: XCTestCase {
                 for await progress in session.uploadProgress {
                     fractions.append(progress.fractionCompleted)
                 }
-                return try await session.value
             }
         
         XCTAssertEqual(fractions, [1])
@@ -409,11 +406,10 @@ final class StubTests: XCTestCase {
             .path("/v1/media")
             .stub(Data([0x01]))
             .send { session in
-                async let result = session.value
+                async let _ = session.value
                 for await progress in session.uploadProgress {
                     fractions.append(progress.fractionCompleted)
                 }
-                return try await result
             }
         
         XCTAssertEqual(fractions, [1])
@@ -429,11 +425,9 @@ final class StubTests: XCTestCase {
             .stub(payload)
             .stream()
             .send { session in
-                async let result = session.value
                 for await chunk in session.chunks {
                     chunks.append(chunk)
                 }
-                return try await result
             }
         
         XCTAssertEqual(chunks, [payload])
@@ -451,31 +445,27 @@ final class StubTests: XCTestCase {
                 handlerCount.value += 1
             }
             .send { session in
-                async let result = session.value
                 for await _ in session.uploadProgress {
                     streamCount += 1
                 }
-                return try await result
             }
         
         XCTAssertEqual(handlerCount.value, 1)
         XCTAssertEqual(streamCount, 1)
     }
     
-    func testSendScopeStillFinishesWhenValueIsIgnored() async throws {
+    func testSendScopeEmptyBodyStillReturnsResponse() async throws {
         let completeCount = SendableBox(0)
         
-        let answer = try await Call<GitHubUser>()
+        let response = try await Call<GitHubUser>()
             .path("/users/testuser")
             .stub(GitHubUser(login: "testuser", id: 1))
             .onComplete { _ in
                 completeCount.value += 1
             }
-            .send { _ in
-                42
-            }
+            .send { _ in }
         
-        XCTAssertEqual(answer, 42)
+        XCTAssertEqual(response.model.login, "testuser")
         XCTAssertEqual(completeCount.value, 1)
     }
     
