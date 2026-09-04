@@ -41,6 +41,18 @@ Or add it through Xcode:
 2. Enter the repository URL
 3. Select the version
 
+Iris requires **Swift 5.9+** and:
+
+| Platform | Minimum |
+|---|---|
+| iOS / iPadOS / Mac Catalyst | 13.0 |
+| macOS | 10.15 |
+| tvOS | 13.0 |
+| watchOS | 6.0 |
+| visionOS | 1.0 |
+
+`AsyncStream` (used by `send { session in }`) shipped in **Swift 5.5** and Apple makes it available on the same OS versions as the table above. It does not raise Iris’s deployment target.
+
 ## Quick Start
 
 ### Basic Usage
@@ -182,22 +194,47 @@ let media = try await Call<Media>()
 
 ## Request Configuration
 
-### Service-Scoped Defaults
+Defaults can be set at three levels. A later level wins on the same key:
 
-Use `IrisService` when different business domains use different base URLs or
-defaults. Calls created from a service inherit its configuration while still
-allowing per-request overrides.
+```text
+per-request  >  IrisService (business module)  >  Iris.configure (global)  >  built-in default
+```
+
+Headers are merged in that order (request keys overwrite service keys, which overwrite global keys). Timeout and base URL are replaced, not merged.
+
+### Global defaults
+
+Call `Iris.configure` once at app launch. Every `Call` that does not set its own value uses this:
 
 ```swift
-// Global defaults for the main API.
 Iris.configure(
     IrisConfiguration()
         .baseURL("https://api.example.com")
         .header("Accept", "application/json")
+        .header("X-API-Version", "v1")
         .timeout(30)
+        .decoder(JSONDecoder())
+        .encoder(JSONEncoder())
+        .plugin(LoggingPlugin())
+        // .session(customAlamofireSession)  // pinning, interceptors, …
 )
+```
 
-// Service defaults for a separate payment API.
+Bare `Call<User>().path("/users/me")` then hits `https://api.example.com/users/me`.
+
+An absolute `path` (scheme + host) does not use any base URL:
+
+```swift
+try await Call<User>()
+    .path("https://cdn.example.com/profile.json")
+    .fetch()
+```
+
+### Service-scoped defaults (business modules)
+
+Use `IrisService` when a domain has its own host, headers, or timeout — payment, IM, a BFF — sitting between global config and a single request.
+
+```swift
 enum PaymentAPI {
     static let service = IrisService(
         baseURL: "https://pay.example.com",
@@ -212,25 +249,48 @@ enum PaymentAPI {
     }
 }
 
-// Uses the global base URL.
+enum MediaAPI {
+    static let service = IrisService(
+        baseURL: "https://media.example.com",
+        timeout: 60
+    )
+    
+    static func upload(_ parts: [MultipartFormBodyPart]) -> Call<Media> {
+        service.call(Media.self)
+            .path("/v1/media")
+            .method(.post)
+            .upload(multipart: parts)
+    }
+}
+
+// Global base URL + headers.
 let user = try await Call<User>()
     .path("/users/me")
     .fetch()
 
-// Uses the payment service base URL.
+// Payment host + X-Business; timeout 15s.
 let order = try await PaymentAPI.order(id: "123").fetch()
+```
 
-// Per-request configuration still has the highest priority.
+`service.call(Model.self)` copies the service onto the `Call`. Other chain methods (`.path`, `.body`, `.validateSuccessCodes()`, …) are unchanged.
+
+### Per-request overrides
+
+Anything set on the `Call` beats service and global:
+
+```swift
 let stagingOrder = try await PaymentAPI.order(id: "123")
     .baseURL("https://pay-staging.example.com")
+    .header("X-Debug", "1")
     .timeout(5)
     .fetch()
 ```
 
-Configuration priority is:
-
-```text
-request > service > global > default
+```swift
+Call<User>()
+    .baseURL("https://api-staging.example.com")  // this request only
+    .timeout(60)
+    .decoder(customDecoder)
 ```
 
 ### HTTP Methods
@@ -323,7 +383,15 @@ Call.data()
     .download(to: destination)
 ```
 
-### Progress
+### Progress and HTTP streaming
+
+Progress and body chunks are **sidecars**: they do not change `send()`’s return type (`Response`). There are two ways to observe them. Use **one style per sidecar** at a given call site (do not both `onUploadProgress` and `for await session.uploadProgress` for the same HUD).
+
+Both styles share one probe. `onComplete` and plugins still run once at the end.
+
+#### Handler (GCD)
+
+For call sites that cannot be `async` (UIKit actions, existing completion-style managers). Closures default to the main queue.
 
 ```swift
 Call<Media>()
@@ -343,11 +411,29 @@ Call.data()
         print(progress.fractionCompleted)
     }
     .send { _ in }
+
+Call.data()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .stream()
+    .onChunk { data in
+        print(String(data: data, encoding: .utf8) ?? "")
+    }
+    .send { result in
+        _ = try? result.get().model   // concatenated body as Data
+    }
 ```
 
 Progress uses Foundation `Progress`. When `Content-Length` is missing, `fractionCompleted` may stay `0`.
 
-In an `async` context, observe the same probe without a handler:
+`stream()` applies to data tasks only — not file upload or file download. Mark the recipe with `stream()` so chunks are delivered; `Empty` discards the concatenated body, `Data` / `String` keep it as the raw model, other `Decodable` types JSON-decode the concatenation.
+
+#### AsyncStream (Swift concurrency)
+
+For `async` call sites. `send { session in }` starts the request, lets `body` consume streams, then always returns `Response`. The live `CallSession` must not be stored outside the closure.
+
+`for await` needs an `async` context. `AsyncStream` is a **Swift 5.5** API (`SE-0314`). On Apple platforms it is available from **iOS 13 / macOS 10.15 / tvOS 13 / watchOS 6 / visionOS 1** — the same versions Iris already requires, so enabling streams does not bump the OS minimum.
 
 ```swift
 let response = try await Call<Media>()
@@ -358,37 +444,17 @@ let response = try await Call<Media>()
             print(progress.fractionCompleted)
         }
     }
-```
 
-`onUploadProgress` and `for await session.uploadProgress` share one probe. Use one style per call site.
-
-### HTTP Streaming
-
-Mark a data request with `stream()` to receive the body in chunks. The terminal result is still delivered by `send()` / `fetch()` (or their completion overloads). Plugins `didReceive` / `process` still run once at the end, on the concatenated body.
-
-`stream()` applies to data tasks only — not file upload or file download.
-
-```swift
-Call.data()
-    .path("/v1/ai/complete")
-    .method(.post)
-    .body(["prompt": "hi"])
-    .stream()
-    .onChunk { data in
-        print(String(data: data, encoding: .utf8) ?? "")
+let downloaded = try await Call.data()
+    .path("/files/document.pdf")
+    .download(to: destination)
+    .send { session in
+        for await progress in session.downloadProgress {
+            print(progress.fractionCompleted)
+        }
     }
-    .send { result in
-        // Concatenated body as `Data`
-        _ = try? result.get().model
-    }
-```
 
-`Empty` discards the concatenated body. `Data` / `String` keep it as the raw model. Other `Decodable` types JSON-decode the concatenation.
-
-The same chunks are available on the live session:
-
-```swift
-let response = try await Call.data()
+let streamed = try await Call.data()
     .path("/v1/ai/complete")
     .method(.post)
     .body(["prompt": "hi"])
@@ -399,6 +465,8 @@ let response = try await Call.data()
         }
     }
 ```
+
+`try await send()` with no closure is the same engine with an empty body: you get `Response` and skip the streams.
 
 ### Validation
 
@@ -480,35 +548,7 @@ let user = try response.map(User.self, atKeyPath: "data.user")
 let filtered = try response.filterSuccessfulStatusCodes()
 ```
 
-## Global and Service Configuration
-
-Configure Iris once at app startup:
-
-```swift
-Iris.configure(
-    IrisConfiguration()
-        .baseURL("https://api.example.com")
-        .header("Accept", "application/json")
-        .header("X-API-Version", "v1")
-        .timeout(30)
-        .decoder(customJSONDecoder)
-        .encoder(customJSONEncoder)
-        .plugin(LoggingPlugin())
-        .plugin(AuthPlugin())
-)
-```
-
-Individual requests can override global settings:
-
-```swift
-Call<User>()
-    .baseURL("https://other-api.example.com")  // Override base URL
-    .timeout(60)                                // Override timeout
-    .decoder(customDecoder)                     // Override decoder
-```
-
-For larger apps, use `IrisService` to group endpoints that share a different
-base URL, headers, or timeout without changing the global configuration.
+See [Request Configuration](#request-configuration) for global `Iris.configure`, per-module `IrisService`, and per-request overrides.
 
 ## Plugins
 
@@ -638,9 +678,10 @@ let request = Call.empty()
 
 ## Requirements
 
+- Swift 5.9+ / Xcode 15.0+
 - iOS 13.0+ / macOS 10.15+ / tvOS 13.0+ / watchOS 6.0+ / visionOS 1.0+
-- Swift 5.9+
-- Xcode 15.0+
+
+`AsyncStream` (`for await session.uploadProgress` / `session.chunks`) is a Swift 5.5 standard-library type. Apple’s availability is iOS 13 / macOS 10.15 / tvOS 13 / watchOS 6 / visionOS 1, so it does not raise Iris’s minimum OS. Handler APIs (`onUploadProgress`, `onChunk`) have no extra concurrency requirement.
 
 ## Dependencies
 
