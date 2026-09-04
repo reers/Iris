@@ -682,7 +682,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A `Response<ResponseType>` containing the model and metadata.
     /// - Throws: `IrisError` if the request fails.
     public func send() async throws -> Response<ResponseType> {
-        try await send { _ in }
+        try await Iris.send(self)
     }
     
     /// Sends the request and returns the decoded model directly.
