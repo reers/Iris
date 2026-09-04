@@ -150,29 +150,44 @@ final class EventBroadcaster: @unchecked Sendable {
     /// - Parameter handlerOnQueue: True when Alamofire already invoked this on
     ///   the handler's queue, so the recipe closure can run inline.
     func yieldUpload(_ progress: Progress, handlerOnQueue: Bool) {
-        let subscribers = appendAndCopy(
-            buffer: { $0.uploadBuffer.append(progress) },
-            subscribers: { $0.uploadSubscribers }
-        )
+        os_unfair_lock_lock(lock)
+        let subscribers: [AsyncStream<Progress>.Continuation]?
+        if didFinish {
+            subscribers = nil
+        } else {
+            uploadBuffer.append(progress)
+            subscribers = uploadSubscribers
+        }
+        os_unfair_lock_unlock(lock)
         notify(uploadHandler, queue: uploadQueue, handlerOnQueue: handlerOnQueue, value: progress)
         subscribers?.forEach { $0.yield(progress) }
     }
     
     func yieldDownload(_ progress: Progress, handlerOnQueue: Bool) {
-        let subscribers = appendAndCopy(
-            buffer: { $0.downloadBuffer.append(progress) },
-            subscribers: { $0.downloadSubscribers }
-        )
+        os_unfair_lock_lock(lock)
+        let subscribers: [AsyncStream<Progress>.Continuation]?
+        if didFinish {
+            subscribers = nil
+        } else {
+            downloadBuffer.append(progress)
+            subscribers = downloadSubscribers
+        }
+        os_unfair_lock_unlock(lock)
         notify(downloadHandler, queue: downloadQueue, handlerOnQueue: handlerOnQueue, value: progress)
         subscribers?.forEach { $0.yield(progress) }
     }
     
     func yieldChunk(_ data: Data, handlerOnQueue: Bool) {
         guard isStream else { return }
-        let subscribers = appendAndCopy(
-            buffer: { $0.chunkBuffer.append(data) },
-            subscribers: { $0.chunkSubscribers }
-        )
+        os_unfair_lock_lock(lock)
+        let subscribers: [AsyncStream<Data>.Continuation]?
+        if didFinish {
+            subscribers = nil
+        } else {
+            chunkBuffer.append(data)
+            subscribers = chunkSubscribers
+        }
+        os_unfair_lock_unlock(lock)
         notify(chunkHandler, queue: chunkQueue, handlerOnQueue: handlerOnQueue, value: data)
         subscribers?.forEach { $0.yield(data) }
     }
@@ -202,22 +217,6 @@ final class EventBroadcaster: @unchecked Sendable {
         upload.forEach { $0.finish() }
         download.forEach { $0.finish() }
         chunks.forEach { $0.finish() }
-    }
-    
-    /// Returns current subscribers when the event was accepted, or `nil` if already finished.
-    private func appendAndCopy<Element>(
-        buffer: (EventBroadcaster) -> Void,
-        subscribers: (EventBroadcaster) -> [AsyncStream<Element>.Continuation]
-    ) -> [AsyncStream<Element>.Continuation]? {
-        os_unfair_lock_lock(lock)
-        if didFinish {
-            os_unfair_lock_unlock(lock)
-            return nil
-        }
-        buffer(self)
-        let current = subscribers(self)
-        os_unfair_lock_unlock(lock)
-        return current
     }
     
     private func notify<Element>(

@@ -110,7 +110,15 @@ public struct Iris {
     /// - Returns: A `Response<Model>` containing the decoded model and raw response data.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
     public static func send<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
-        try await send(request) { _ in }
+        let broadcaster = EventBroadcaster(from: request)
+        let cancellationToken = AlamofireRequestCancellationToken()
+        return try await withTaskCancellationHandler {
+            defer { broadcaster.finish() }
+            return try await execute(request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+        } onCancel: {
+            cancellationToken.cancel()
+            broadcaster.finish()
+        }
     }
     
     /// Starts the request, then runs `body` with a live `CallSession`.
@@ -128,11 +136,7 @@ public struct Iris {
         
         let valueTask = Task<Response<Model>, Error> {
             defer { broadcaster.finish() }
-            let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
-            if let stubBehavior {
-                return try await performStub(request, behavior: stubBehavior, broadcaster: broadcaster)
-            }
-            return try await performRequest(request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            return try await execute(request, broadcaster: broadcaster, cancellationToken: cancellationToken)
         }
         
         let session = CallSession(valueTask: valueTask, broadcaster: broadcaster)
@@ -167,6 +171,21 @@ public struct Iris {
     }
     
     // MARK: - Private Methods
+    
+    /// Stub or live request. Shared by `send()` and `send { session in }` so the
+    /// session path can start this work in a sibling task without changing
+    /// plugin / sidecar / decode order.
+    private static func execute<Model: Decodable>(
+        _ request: Call<Model>,
+        broadcaster: EventBroadcaster,
+        cancellationToken: AlamofireRequestCancellationToken
+    ) async throws -> Response<Model> {
+        let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
+        if let stubBehavior {
+            return try await performStub(request, behavior: stubBehavior, broadcaster: broadcaster)
+        }
+        return try await performRequest(request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+    }
     
     /// Performs the actual network request using Alamofire.
     ///
