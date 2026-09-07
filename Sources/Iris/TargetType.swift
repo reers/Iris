@@ -17,8 +17,10 @@ public protocol TargetType {
 
     /// The target's base `URL`.
     ///
-    /// This is the root URL used when `path` is relative.
-    var baseURL: URL { get }
+    /// This is the root URL used when `path` is relative. It is `nil` when the
+    /// request uses an absolute `path` and no base URL is configured; read
+    /// `fullURL` for the resolved request URL instead.
+    var baseURL: URL? { get }
 
     /// The request path.
     ///
@@ -69,4 +71,19 @@ public extension TargetType {
 
     /// Provides stub data for use in testing. Default is `Data()`.
     var sampleData: Data { Data() }
+}
+
+// MARK: - URL Resolution
+
+public extension TargetType {
+
+    /// The full request URL: an absolute `path` is returned as-is, a relative
+    /// `path` is resolved against `baseURL`.
+    ///
+    /// `nil` when `path` is relative and no base URL is configured. Prefer this
+    /// over `baseURL?.appendingPathComponent(path)`, which mishandles absolute
+    /// paths, query strings, and leading slashes.
+    var fullURL: URL? {
+        try? Iris.resolveURL(baseURL: baseURL, path: path)
+    }
 }

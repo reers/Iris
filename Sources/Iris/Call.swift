@@ -48,11 +48,10 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// The base URL for the request.
     ///
     /// If not set explicitly, falls back to the global configuration's baseURL.
-    public var baseURL: URL {
-        guard let baseURL = configuredBaseURL else {
-            preconditionFailure("baseURL is required unless path is an absolute URL")
-        }
-        return baseURL
+    /// `nil` when the request uses an absolute `path` and no base URL is
+    /// configured anywhere; see `fullURL` for the resolved request URL.
+    public var baseURL: URL? {
+        configuredBaseURL
     }
     
     /// The path component to append to the base URL.

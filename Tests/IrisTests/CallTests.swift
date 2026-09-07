@@ -411,7 +411,7 @@ final class CallTests: XCTestCase {
         let request = Call<Empty>()
             .baseURL("https://api.example.com")
         
-        XCTAssertEqual(request.baseURL.absoluteString, "https://api.example.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://api.example.com")
     }
     
     func testBaseURLFallsBackToGlobalConfiguration() {
@@ -419,7 +419,7 @@ final class CallTests: XCTestCase {
         
         let request = Call<Empty>()
         
-        XCTAssertEqual(request.baseURL.absoluteString, "https://global.example.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://global.example.com")
     }
     
     func testBaseURLOverridesGlobalConfiguration() {
@@ -428,7 +428,55 @@ final class CallTests: XCTestCase {
         let request = Call<Empty>()
             .baseURL("https://local.example.com")
         
-        XCTAssertEqual(request.baseURL.absoluteString, "https://local.example.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://local.example.com")
+    }
+    
+    /// Previously `baseURL` hit a `preconditionFailure` here; it must return nil.
+    func testBaseURLIsNilWhenUnsetWithAbsolutePath() {
+        let request = Call<Empty>()
+            .path("https://api.example.com/users/octocat")
+        
+        XCTAssertNil(request.baseURL)
+    }
+    
+    func testFullURLReturnsAbsolutePathAsIs() {
+        let request = Call<Empty>()
+            .path("https://api.example.com/users/octocat")
+        
+        XCTAssertEqual(request.fullURL?.absoluteString, "https://api.example.com/users/octocat")
+    }
+    
+    func testFullURLResolvesRelativePathAgainstBaseURL() {
+        let request = Call<Empty>()
+            .baseURL("https://api.example.com")
+            .path("/users/octocat")
+        
+        XCTAssertEqual(request.fullURL?.absoluteString, "https://api.example.com/users/octocat")
+    }
+    
+    func testFullURLIsNilForRelativePathWithoutBaseURL() {
+        let request = Call<Empty>()
+            .path("/users/octocat")
+        
+        XCTAssertNil(request.fullURL)
+    }
+    
+    /// A plugin reading `target.baseURL` on an absolute-path request with no
+    /// base URL configured anywhere must see nil, not crash the process.
+    func testPluginReadsBaseURLSafelyWhenUnset() async throws {
+        let captured = SendableArray<String>()
+        
+        Iris.configuration = IrisConfiguration()
+            .plugin(BaseURLRecorderPlugin(captured: captured))
+        
+        let response = try await Call<GitHubUser>()
+            .path("https://api.example.com/users/octocat")
+            .stub(GitHubUser(login: "octocat", id: 1))
+            .stub(behavior: .immediate)
+            .send()
+        
+        XCTAssertEqual(response.model.login, "octocat")
+        XCTAssertEqual(captured.values, ["nil", "https://api.example.com/users/octocat"])
     }
     
     func testResolveAbsolutePathDoesNotNeedBaseURL() throws {
@@ -629,7 +677,7 @@ final class CallTests: XCTestCase {
             .timeout(30)
             .validateSuccessCodes()
         
-        XCTAssertEqual(request.baseURL.absoluteString, "https://api.github.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://api.github.com")
         XCTAssertEqual(request.path, "/users/octocat")
         XCTAssertEqual(request.method, .get)
         XCTAssertEqual(request.headers?["Accept"], "application/json")
@@ -720,11 +768,21 @@ final class CallTests: XCTestCase {
             .stub("test data")
         
         // Test TargetType protocol conformance
-        XCTAssertEqual(request.baseURL.absoluteString, "https://api.example.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://api.example.com")
         XCTAssertEqual(request.path, "/test")
         XCTAssertEqual(request.method, .post)
         XCTAssertEqual(request.headers?["X-Custom"], "value")
         XCTAssertEqual(request.validationType, .successCodes)
         XCTAssertEqual(String(data: request.sampleData, encoding: .utf8), "test data")
+    }
+}
+
+/// Records `target.baseURL` then `target.fullURL` as seen by plugins.
+private struct BaseURLRecorderPlugin: PluginType {
+    let captured: SendableArray<String>
+    
+    func willSend(_ request: CallType, target: TargetType) {
+        captured.append(target.baseURL?.absoluteString ?? "nil")
+        captured.append(target.fullURL?.absoluteString ?? "nil")
     }
 }

@@ -586,6 +586,8 @@ class LoggingPlugin: PluginType {
 }
 ```
 
+`TargetType.baseURL` is `URL?`: it is `nil` when the request uses an absolute `path` and no base URL is configured. Prefer `target.fullURL` when you need the resolved request URL — it returns absolute paths as-is and resolves relative paths against the base URL.
+
 ### Common Plugin Use Cases
 
 - **Authentication**: Inject auth tokens into requests
