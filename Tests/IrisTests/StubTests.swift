@@ -386,9 +386,12 @@ final class StubTests: XCTestCase {
     func testSendScopeProgressThenValue() async throws {
         var fractions: [Double] = []
         
+        // Delayed stub so the body subscribes before stub sidecars fire;
+        // sidecar streams are live-only and drop values emitted before subscription.
         let response = try await Call.data()
             .path("/v1/media")
             .stub(Data([0x01]))
+            .stub(behavior: .delayed(0.05))
             .send { session in
                 for await progress in session.uploadProgress {
                     fractions.append(progress.fractionCompleted)
@@ -405,6 +408,7 @@ final class StubTests: XCTestCase {
         let response = try await Call.data()
             .path("/v1/media")
             .stub(Data([0x01]))
+            .stub(behavior: .delayed(0.05))
             .send { session in
                 async let _ = session.value
                 for await progress in session.uploadProgress {
@@ -423,6 +427,7 @@ final class StubTests: XCTestCase {
         let response = try await Call.data()
             .path("/v1/ai")
             .stub(payload)
+            .stub(behavior: .delayed(0.05))
             .stream()
             .send { session in
                 for await chunk in session.chunks {
@@ -441,6 +446,7 @@ final class StubTests: XCTestCase {
         _ = try await Call.data()
             .path("/v1/media")
             .stub(Data([0x01]))
+            .stub(behavior: .delayed(0.05))
             .onUploadProgress { _ in
                 handlerCount.value += 1
             }

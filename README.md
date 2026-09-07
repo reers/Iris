@@ -389,6 +389,8 @@ Progress and body chunks are **sidecars**: they do not change `send()`’s retur
 
 Both styles share one probe. `onComplete` and plugins still run once at the end.
 
+Sidecar streams are **live-only**: values emitted before a stream is created are not replayed. Access `session.uploadProgress`, `session.downloadProgress`, or `session.chunks` at the start of the `send` body to observe the full sequence, and await the returned `Response` (or `session.value`) for the terminal result. Each delivered `Progress` is an immutable snapshot taken when the value was emitted.
+
 #### Handler (GCD)
 
 For call sites that cannot be `async` (UIKit actions, existing completion-style managers). Closures default to the main queue.

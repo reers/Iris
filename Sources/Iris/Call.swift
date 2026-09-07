@@ -702,6 +702,10 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// `send(on:completion:)`, which is the GCD callback overload — use
     /// `try await send { session in ... }` so the compiler picks this one.
     ///
+    /// Sidecar streams are live-only: values emitted before a stream is created
+    /// are not replayed. Access `session.uploadProgress`, `session.downloadProgress`,
+    /// or `session.chunks` at the start of `body` to observe the full sequence.
+    ///
     /// Recipe sidecars (`onUploadProgress`, `onChunk`, `onComplete`) still fire
     /// on the same probe. Prefer one style per kind of sidecar at the call site.
     ///

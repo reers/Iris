@@ -123,10 +123,12 @@ public struct Iris {
     
     /// Starts the request, then runs `body` with a live `CallSession`.
     ///
-    /// Progress and chunks are armed before `body` runs. Recipe sidecars
-    /// (`onUploadProgress`, `onChunk`, `onComplete`) still fire on the same probe.
-    /// After `body` returns, this awaits the network task and always returns
-    /// `Response<Model>` — `body` only consumes sidecars.
+    /// Progress and chunk probes are attached before `body` runs, but sidecar
+    /// streams are live-only: values emitted before a stream is created are not
+    /// replayed. Recipe sidecars (`onUploadProgress`, `onChunk`, `onComplete`)
+    /// still fire on the same probe. After `body` returns, this awaits the
+    /// network task and always returns `Response<Model>` — `body` only consumes
+    /// sidecars.
     static func send<Model: Decodable>(
         _ request: Call<Model>,
         _ body: (CallSession<Model>) async throws -> Void
