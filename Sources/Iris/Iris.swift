@@ -182,11 +182,15 @@ public struct Iris {
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async throws -> Response<Model> {
+        // Snapshot the global configuration once so a concurrent
+        // `Iris.configure(...)` cannot hand this request a mix of old and
+        // new values mid-flight.
+        let configuration = Iris.configuration
         let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
         if let stubBehavior {
-            return try await performStub(request, behavior: stubBehavior, broadcaster: broadcaster)
+            return try await performStub(request, behavior: stubBehavior, broadcaster: broadcaster, configuration: configuration)
         }
-        return try await performRequest(request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+        return try await performRequest(request, broadcaster: broadcaster, cancellationToken: cancellationToken, configuration: configuration)
     }
     
     /// Performs the actual network request using Alamofire.
@@ -205,14 +209,15 @@ public struct Iris {
     private static func performRequest<Model: Decodable>(
         _ request: Call<Model>,
         broadcaster: EventBroadcaster,
-        cancellationToken: AlamofireRequestCancellationToken
+        cancellationToken: AlamofireRequestCancellationToken,
+        configuration: IrisConfiguration
     ) async throws -> Response<Model> {
         // 1. Create Endpoint
-        let endpoint = try createEndpoint(from: request)
+        let endpoint = try createEndpoint(from: request, configuration: configuration)
         
         // 2. Convert to URLRequest
         var urlRequest = try endpoint.urlRequest()
-        urlRequest.timeoutInterval = request.timeout
+        urlRequest.timeoutInterval = request.timeout(over: configuration)
         
         // 3. Merge default headers
         var headers = configuration.defaultHeaders
@@ -241,35 +246,36 @@ public struct Iris {
         
         // 5. Execute request based on task type. Network methods return Result
         // so failures still flow through plugin didReceive/process.
+        let session = configuration.session
         let networkResult: Result<HTTPResponse, IrisError>
         
         switch request.task {
         case .uploadFile(let fileURL):
-            networkResult = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .uploadMultipartFormData(let formData):
-            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .uploadCompositeMultipartFormData(let formData, _):
-            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .downloadDestination(let destination):
-            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .downloadParameters(_, _, let destination):
-            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         default:
             // Data tasks only. File upload/download ignore `stream()`.
             if request.isStream {
-                networkResult = await performStream(urlRequest, interceptor: interceptor, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+                networkResult = await performStream(urlRequest, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
             } else {
-                networkResult = await performDataRequest(urlRequest, interceptor: interceptor, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+                networkResult = await performDataRequest(urlRequest, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
             }
         }
         
         // 6-8. Notify plugins, process, then decode or throw
-        return try finish(networkResult, request: request)
+        return try finish(networkResult, request: request, configuration: configuration)
     }
     
     /// Decodes the response data into the specified model type.
@@ -286,7 +292,8 @@ public struct Iris {
     private static func decodeModel<Model: Decodable>(
         _ type: Model.Type,
         from rawResponse: HTTPResponse,
-        using customDecoder: JSONDecoder?
+        using customDecoder: JSONDecoder?,
+        configuration: IrisConfiguration
     ) throws -> Model {
         let decoder = customDecoder ?? configuration.jsonDecoder
         
@@ -303,7 +310,8 @@ public struct Iris {
     /// so plugins can log errors, hide activity indicators, or recover failures.
     private static func finish<Model: Decodable>(
         _ result: Result<HTTPResponse, IrisError>,
-        request: Call<Model>
+        request: Call<Model>,
+        configuration: IrisConfiguration
     ) throws -> Response<Model> {
         configuration.plugins.forEach { $0.didReceive(result, target: request) }
         
@@ -315,7 +323,7 @@ public struct Iris {
         switch processedResult {
         case .success(let rawResponse):
             do {
-                let model = try decodeModel(Model.self, from: rawResponse, using: request.decoder)
+                let model = try decodeModel(Model.self, from: rawResponse, using: request.decoder, configuration: configuration)
                 
                 if let onCompleteHandler = request.onCompleteHandler {
                     let afResponse = DataResponse<Model, AFError>(
@@ -518,6 +526,7 @@ public struct Iris {
     private static func performStream<Model: Decodable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
+        session: Session,
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
@@ -525,7 +534,7 @@ public struct Iris {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let accumulation = StreamAccumulation()
-                let streamRequest = configuration.session.streamRequest(
+                let streamRequest = session.streamRequest(
                     urlRequest,
                     automaticallyCancelOnStreamError: false,
                     interceptor: interceptor
@@ -596,8 +605,8 @@ public struct Iris {
     ///
     /// - Parameter request: The request to convert.
     /// - Returns: An `Endpoint` representing the request.
-    private static func createEndpoint<Model: Decodable>(from request: Call<Model>) throws -> Endpoint {
-        let url = try resolveURL(baseURL: request.configuredBaseURL, path: request.path).absoluteString
+    private static func createEndpoint<Model: Decodable>(from request: Call<Model>, configuration: IrisConfiguration) throws -> Endpoint {
+        let url = try resolveURL(baseURL: request.configuredBaseURL(over: configuration), path: request.path).absoluteString
         
         return Endpoint(
             url: url,
@@ -618,12 +627,13 @@ public struct Iris {
     private static func performDataRequest<Model: Decodable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
+        session: Session,
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
-            configuration.session.request(urlRequest, interceptor: interceptor)
+            session.request(urlRequest, interceptor: interceptor)
         }
     }
     
@@ -639,12 +649,13 @@ public struct Iris {
         _ urlRequest: URLRequest,
         fileURL: URL,
         interceptor: IrisCallInterceptor,
+        session: Session,
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
-            configuration.session.upload(fileURL, with: urlRequest, interceptor: interceptor)
+            session.upload(fileURL, with: urlRequest, interceptor: interceptor)
         }
     }
     
@@ -660,6 +671,7 @@ public struct Iris {
         _ urlRequest: URLRequest,
         formData: MultipartFormData,
         interceptor: IrisCallInterceptor,
+        session: Session,
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
@@ -667,7 +679,7 @@ public struct Iris {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
             let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
             afFormData.applyMoyaMultipartFormData(formData)
-            return configuration.session.upload(multipartFormData: afFormData, with: urlRequest, interceptor: interceptor)
+            return session.upload(multipartFormData: afFormData, with: urlRequest, interceptor: interceptor)
         }
     }
     
@@ -683,12 +695,13 @@ public struct Iris {
         _ urlRequest: URLRequest,
         destination: @escaping DownloadDestination,
         interceptor: IrisCallInterceptor,
+        session: Session,
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
         await performDownloadResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
-            configuration.session.download(urlRequest, interceptor: interceptor, to: destination)
+            session.download(urlRequest, interceptor: interceptor, to: destination)
         }
     }
     
@@ -706,7 +719,8 @@ public struct Iris {
     private static func performStub<Model: Decodable>(
         _ request: Call<Model>,
         behavior: StubBehavior,
-        broadcaster: EventBroadcaster
+        broadcaster: EventBroadcaster,
+        configuration: IrisConfiguration
     ) async throws -> Response<Model> {
         // Calculate delay
         let delay: TimeInterval
@@ -757,7 +771,7 @@ public struct Iris {
         }
         
         broadcaster.deliverStub(data: stubData)
-        return try finish(result, request: request)
+        return try finish(result, request: request, configuration: configuration)
     }
 }
 

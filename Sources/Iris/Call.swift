@@ -91,7 +91,15 @@ public struct Call<ResponseType: Decodable>: TargetType {
     
     /// The per-request or globally configured base URL, if any.
     var configuredBaseURL: URL? {
-        _baseURL ?? service?.baseURL ?? Iris.configuration.baseURL
+        configuredBaseURL(over: Iris.configuration)
+    }
+    
+    /// Resolves the base URL against a specific configuration snapshot.
+    ///
+    /// Requests resolve against the snapshot taken when they start, so a
+    /// mid-flight `Iris.configure(...)` cannot change their URL.
+    func configuredBaseURL(over configuration: IrisConfiguration) -> URL? {
+        _baseURL ?? service?.baseURL ?? configuration.baseURL
     }
     
     /// Per-request timeout that overrides the global configuration.
@@ -102,8 +110,13 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// Uses the per-request timeout when set, otherwise `IrisConfiguration.defaultTimeout`
     /// (which defaults to 30 seconds).
     public var timeout: TimeInterval {
-        get { _timeout ?? service?.timeout ?? Iris.configuration.defaultTimeout }
+        get { timeout(over: Iris.configuration) }
         set { _timeout = newValue }
+    }
+    
+    /// Resolves the timeout against a specific configuration snapshot.
+    func timeout(over configuration: IrisConfiguration) -> TimeInterval {
+        _timeout ?? service?.timeout ?? configuration.defaultTimeout
     }
     
     /// Custom JSON decoder for response parsing.
