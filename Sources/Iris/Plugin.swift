@@ -127,7 +127,7 @@ public protocol CallType {
 
     /// Authenticates the request with a credential.
     ///
-    /// - Parameter credential: The credential to use for authentication.
+    /// - Parameter credential: The credential to use.
     /// - Returns: Self for chaining.
     func authenticate(with credential: URLCredential) -> Self
 

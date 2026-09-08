@@ -140,6 +140,71 @@ final class PluginTests: XCTestCase {
         XCTAssertEqual(plugin.processCalledCount, 0)
     }
     
+    func testWillSendCallTypeProvidesCurlDescription() async throws {
+        let curlDescription = SendableBox("")
+        let plugin = CurlCapturingPlugin(curlDescription: curlDescription)
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://example.com")
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+
+        _ = try await Call<Empty>()
+            .path("/curl")
+            .method(.post)
+            .header("X-Debug", "yes")
+            .send()
+
+        XCTAssertTrue(curlDescription.value.hasPrefix("$ curl"))
+        XCTAssertTrue(curlDescription.value.contains("https://example.com/curl"))
+        XCTAssertTrue(curlDescription.value.contains("-X POST"))
+        XCTAssertTrue(curlDescription.value.contains("X-Debug: yes"))
+    }
+
+    func testWillSendAuthenticateSupportsMoyaStyleCredentialPlugin() async throws {
+        let authenticatedRequestURL = SendableBox<URL?>(nil)
+        let plugin = BasicAuthenticationPlugin(
+            username: "user",
+            password: "passwd",
+            authenticatedRequestURL: authenticatedRequestURL
+        )
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://example.com")
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+
+        _ = try await Call<Empty>()
+            .path("/auth")
+            .send()
+
+        XCTAssertEqual(authenticatedRequestURL.value?.absoluteString, "https://example.com/auth")
+    }
+
     // MARK: - OrderTrackingPlugin Tests
     
     func testOrderTrackingPlugin() {
@@ -417,5 +482,24 @@ private struct MockCallType: CallType {
     func cURLDescription(calling handler: @escaping (String) -> Void) -> MockCallType {
         handler(request?.description ?? "")
         return self
+    }
+}
+
+private struct CurlCapturingPlugin: PluginType {
+    let curlDescription: SendableBox<String>
+
+    func willSend(_ request: CallType, target: TargetType) {
+        _ = request.cURLDescription { curlDescription.value = $0 }
+    }
+}
+
+private struct BasicAuthenticationPlugin: PluginType {
+    let username: String
+    let password: String
+    let authenticatedRequestURL: SendableBox<URL?>
+
+    func willSend(_ request: CallType, target: TargetType) {
+        let authenticatedRequest = request.authenticate(username: username, password: password, persistence: .none)
+        authenticatedRequestURL.value = authenticatedRequest.request?.url
     }
 }

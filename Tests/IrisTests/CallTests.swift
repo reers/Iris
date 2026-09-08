@@ -110,6 +110,15 @@ final class CallTests: XCTestCase {
         XCTAssertEqual(request.headers?["Header2"], "value2")
     }
     
+    func testHeaderConfigurationOverridesExistingHeaderIgnoringCase() {
+        let request = Call<Empty>()
+            .header("Accept", "application/json")
+            .header("accept", "text/plain")
+
+        XCTAssertEqual(request.headers?["Accept"], "text/plain")
+        XCTAssertNil(request.headers?["accept"])
+    }
+
     func testServiceHeadersMergeBetweenGlobalAndRequestHeaders() async throws {
         var capturedHeaders: [String: String] = [:]
         StubURLProtocol.handler = { request in
@@ -123,7 +132,7 @@ final class CallTests: XCTestCase {
             return (response, Data("{}".utf8))
         }
         defer { StubURLProtocol.reset() }
-        
+
         Iris.configure(
             IrisConfiguration()
                 .baseURL("https://global.example.com")
@@ -154,6 +163,36 @@ final class CallTests: XCTestCase {
         XCTAssertEqual(capturedHeaders["X-Shared"], "request")
     }
     
+    func testRequestHeadersOverrideDefaultHeadersIgnoringCase() async throws {
+        let capturedHeaders = SendableBox<[String: String]>([:])
+        StubURLProtocol.handler = { request in
+            capturedHeaders.value = request.allHTTPHeaderFields ?? [:]
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://global.example.com")
+                .header("Accept", "application/json")
+                .session(makeStubbedSession())
+        )
+
+        _ = try await Call<Empty>()
+            .path("/headers")
+            .header("accept", "text/plain")
+            .send()
+
+        XCTAssertEqual(capturedHeaders.value["Accept"], "text/plain")
+        XCTAssertNil(capturedHeaders.value["accept"])
+    }
+
     func testServiceBaseURLOverridesConfigurationBaseURL() {
         Iris.configure(IrisConfiguration().baseURL("https://global.example.com"))
         let service = IrisService(baseURL: URL(string: "https://service.example.com")!)

@@ -184,7 +184,7 @@ public extension IrisConfiguration {
     /// - Returns: A new configuration with the added header.
     func header(_ key: String, _ value: String) -> IrisConfiguration {
         var config = self
-        config.defaultHeaders[key] = value
+        config.defaultHeaders.setHTTPHeaderField(key, value: value)
         return config
     }
     
@@ -195,7 +195,7 @@ public extension IrisConfiguration {
     /// - Returns: A new configuration with the merged headers.
     func headers(_ headers: [String: String]) -> IrisConfiguration {
         var config = self
-        config.defaultHeaders.merge(headers) { _, new in new }
+        config.defaultHeaders.mergeHTTPHeaderFields(headers)
         return config
     }
     

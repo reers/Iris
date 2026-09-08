@@ -98,6 +98,15 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertEqual(config.defaultHeaders["Content-Type"], "application/json")
     }
     
+    func testHeadersMergeOverridesExistingHeadersIgnoringCase() {
+        let config = IrisConfiguration()
+            .header("Accept", "application/json")
+            .headers(["accept": "text/plain"])
+
+        XCTAssertEqual(config.defaultHeaders["Accept"], "text/plain")
+        XCTAssertNil(config.defaultHeaders["accept"])
+    }
+
     // MARK: - Timeout Configuration Tests
     
     func testTimeout() {

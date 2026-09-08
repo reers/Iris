@@ -212,24 +212,7 @@ public struct Iris {
         cancellationToken: AlamofireRequestCancellationToken,
         configuration: IrisConfiguration
     ) async throws -> Response<Model> {
-        // 1. Create Endpoint
-        let endpoint = try createEndpoint(from: request, configuration: configuration)
-        
-        // 2. Convert to URLRequest
-        var urlRequest = try endpoint.urlRequest()
-        urlRequest.timeoutInterval = request.timeout(over: configuration)
-        
-        // 3. Merge default headers
-        var headers = configuration.defaultHeaders
-        if let serviceHeaders = request.service?.headers {
-            headers.merge(serviceHeaders) { _, new in new }
-        }
-        if let requestHeaders = request.headers {
-            headers.merge(requestHeaders) { _, new in new }
-        }
-        for (key, value) in headers {
-            urlRequest.setValue(value, forHTTPHeaderField: key)
-        }
+        let urlRequest = try makeURLRequest(from: request, configuration: configuration)
         
         // 4. Create interceptor (bridges Plugin system to Alamofire)
         // Capture plugins array to satisfy Sendable requirement
@@ -237,10 +220,6 @@ public struct Iris {
         let interceptor = IrisCallInterceptor(
             prepare: { @Sendable urlRequest in
                 plugins.reduce(urlRequest) { $1.prepare($0, target: request) }
-            },
-            willSend: { @Sendable urlRequest in
-                let callType = CallTypeWrapper(request: urlRequest)
-                plugins.forEach { $0.willSend(callType, target: request) }
             }
         )
         
@@ -251,26 +230,26 @@ public struct Iris {
         
         switch request.task {
         case .uploadFile(let fileURL):
-            networkResult = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .uploadMultipartFormData(let formData):
-            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .uploadCompositeMultipartFormData(let formData, _):
-            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .downloadDestination(let destination):
-            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .downloadParameters(_, _, let destination):
-            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         default:
             // Data tasks only. File upload/download ignore `stream()`.
             if request.isStream {
-                networkResult = await performStream(urlRequest, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+                networkResult = await performStream(urlRequest, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             } else {
-                networkResult = await performDataRequest(urlRequest, interceptor: interceptor, session: session, request: request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+                networkResult = await performDataRequest(urlRequest, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             }
         }
         
@@ -516,6 +495,24 @@ public struct Iris {
         }
     }
     
+    private static func configureWillSend<Model: Decodable>(
+        _ afRequest: AFRequest,
+        interceptor: IrisCallInterceptor,
+        request: Call<Model>,
+        plugins: [PluginType]
+    ) {
+        interceptor.willSend = { @Sendable [weak afRequest] urlRequest in
+            guard let afRequest else {
+                let callType = CallTypeWrapper(alamofireRequest: nil, urlRequest: urlRequest)
+                plugins.forEach { $0.willSend(callType, target: request) }
+                return
+            }
+
+            let callType = CallTypeWrapper(alamofireRequest: afRequest, urlRequest: urlRequest)
+            plugins.forEach { $0.willSend(callType, target: request) }
+        }
+    }
+
     /// Streams the HTTP response body as chunks, then finishes with the concatenated data.
     ///
     /// Each fragment is forwarded to `onChunk` on `chunkQueue`. The concatenated body
@@ -528,17 +525,22 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
+        plugins: [PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let accumulation = StreamAccumulation()
-                let streamRequest = session.streamRequest(
-                    urlRequest,
-                    automaticallyCancelOnStreamError: false,
-                    interceptor: interceptor
-                )
+                let streamRequest = session.requestQueue.sync {
+                    let streamRequest = session.streamRequest(
+                        urlRequest,
+                        automaticallyCancelOnStreamError: false,
+                        interceptor: interceptor
+                    )
+                    configureWillSend(streamRequest, interceptor: interceptor, request: request, plugins: plugins)
+                    return streamRequest
+                }
                 attachSidecars(streamRequest, from: request, broadcaster: broadcaster)
                 cancellationToken.setRequest(streamRequest)
                 
@@ -617,6 +619,28 @@ public struct Iris {
         )
     }
     
+    private static func makeURLRequest<Model: Decodable>(
+        from request: Call<Model>,
+        configuration: IrisConfiguration
+    ) throws -> URLRequest {
+        let endpoint = try createEndpoint(from: request, configuration: configuration)
+        var urlRequest = try endpoint.urlRequest()
+        urlRequest.timeoutInterval = request.timeout(over: configuration)
+
+        var headers = configuration.defaultHeaders
+        if let serviceHeaders = request.service?.headers {
+            headers.mergeHTTPHeaderFields(serviceHeaders)
+        }
+        if let requestHeaders = request.headers {
+            headers.mergeHTTPHeaderFields(requestHeaders)
+        }
+        for (key, value) in headers {
+            urlRequest.setValue(value, forHTTPHeaderField: key)
+        }
+
+        return urlRequest
+    }
+
     /// Performs a standard data request using Alamofire.
     ///
     /// - Parameters:
@@ -629,11 +653,16 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
+        plugins: [PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
-            session.request(urlRequest, interceptor: interceptor)
+            session.requestQueue.sync {
+                let afRequest = session.request(urlRequest, interceptor: interceptor)
+                configureWillSend(afRequest, interceptor: interceptor, request: request, plugins: plugins)
+                return afRequest
+            }
         }
     }
     
@@ -651,11 +680,16 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
+        plugins: [PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
-            session.upload(fileURL, with: urlRequest, interceptor: interceptor)
+            session.requestQueue.sync {
+                let afRequest = session.upload(fileURL, with: urlRequest, interceptor: interceptor)
+                configureWillSend(afRequest, interceptor: interceptor, request: request, plugins: plugins)
+                return afRequest
+            }
         }
     }
     
@@ -673,13 +707,18 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
+        plugins: [PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
-            let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
-            afFormData.applyMoyaMultipartFormData(formData)
-            return session.upload(multipartFormData: afFormData, with: urlRequest, interceptor: interceptor)
+            session.requestQueue.sync {
+                let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
+                afFormData.applyMoyaMultipartFormData(formData)
+                let afRequest = session.upload(multipartFormData: afFormData, with: urlRequest, interceptor: interceptor)
+                configureWillSend(afRequest, interceptor: interceptor, request: request, plugins: plugins)
+                return afRequest
+            }
         }
     }
     
@@ -697,11 +736,16 @@ public struct Iris {
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
+        plugins: [PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
         await performDownloadResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
-            session.download(urlRequest, interceptor: interceptor, to: destination)
+            session.requestQueue.sync {
+                let afRequest = session.download(urlRequest, interceptor: interceptor, to: destination)
+                configureWillSend(afRequest, interceptor: interceptor, request: request, plugins: plugins)
+                return afRequest
+            }
         }
     }
     
@@ -736,7 +780,8 @@ public struct Iris {
             try await _Concurrency.Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
         
-        let callType = CallTypeWrapper(request: nil)
+        let stubRequest = try? makeURLRequest(from: request, configuration: configuration)
+        let callType = CallTypeWrapper(alamofireRequest: nil, urlRequest: stubRequest)
         configuration.plugins.forEach { $0.willSend(callType, target: request) }
         
         let result: Result<HTTPResponse, IrisError>
@@ -782,26 +827,42 @@ public struct Iris {
 /// This wrapper is used internally to provide request information to plugins
 /// during the request lifecycle.
 private struct CallTypeWrapper: CallType {
-    
+
+    /// The underlying Alamofire request when this is a live network call.
+    let alamofireRequest: AFRequest?
+
+    /// The prepared URL request seen by the plugin.
+    let urlRequest: URLRequest?
+
     /// The underlying URL request.
-    let request: URLRequest?
-    
+    var request: URLRequest? {
+        urlRequest ?? alamofireRequest?.request
+    }
+
     /// Additional headers from the session configuration.
-    var sessionHeaders: [String: String] { [:] }
-    
+    var sessionHeaders: [String: String] {
+        alamofireRequest?.sessionHeaders ?? [:]
+    }
+
     /// Authenticates the request with username and password.
     func authenticate(username: String, password: String, persistence: URLCredential.Persistence) -> Self {
-        self
+        alamofireRequest?.authenticate(username: username, password: password, persistence: persistence)
+        return self
     }
     
     /// Authenticates the request with a credential.
     func authenticate(with credential: URLCredential) -> Self {
-        self
+        alamofireRequest?.authenticate(with: credential)
+        return self
     }
     
     /// Returns a cURL representation of the request.
     func cURLDescription(calling handler: @escaping @Sendable (String) -> Void) -> Self {
-        handler(request?.description ?? "")
+        if let alamofireRequest {
+            _ = alamofireRequest.cURLDescription(calling: handler)
+        } else {
+            handler(urlRequest?.irisCURLDescription() ?? "")
+        }
         return self
     }
 }

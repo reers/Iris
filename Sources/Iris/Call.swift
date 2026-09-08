@@ -214,7 +214,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     public func header(_ key: String, _ value: String) -> Call<ResponseType> {
         var request = self
         var currentHeaders = request.headers ?? [:]
-        currentHeaders[key] = value
+        currentHeaders.setHTTPHeaderField(key, value: value)
         request.headers = currentHeaders
         return request
     }

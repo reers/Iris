@@ -64,7 +64,35 @@ extension AFRequest: CallType {
 // MARK: - URLRequest Encoding Extensions
 
 internal extension URLRequest {
-    
+
+    /// Returns a cURL command that recreates this request.
+    func irisCURLDescription() -> String {
+        var components = ["$ curl"]
+
+        if let method = httpMethod, method.uppercased() != "GET" {
+            components.append("-X \(method.uppercased())")
+        }
+
+        let headers = (allHTTPHeaderFields ?? [:]).sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+        for (name, value) in headers {
+            components.append("-H \(Self.shellEscaped("\(name): \(value)"))")
+        }
+
+        if let body = httpBody, !body.isEmpty, let bodyString = String(data: body, encoding: .utf8) {
+            components.append("--data \(Self.shellEscaped(bodyString))")
+        }
+
+        if let urlString = url?.absoluteString {
+            components.append(Self.shellEscaped(urlString))
+        }
+
+        return components.joined(separator: " ")
+    }
+
+    private static func shellEscaped(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
     /// Encodes an Encodable object into the request body.
     ///
     /// - Parameters:
@@ -197,7 +225,7 @@ final class IrisCallInterceptor: Alamofire.RequestInterceptor, @unchecked Sendab
     let prepare: (@Sendable (URLRequest) -> URLRequest)?
     
     /// Closure called just before the request is sent.
-    let willSend: (@Sendable (URLRequest) -> Void)?
+    var willSend: (@Sendable (URLRequest) -> Void)?
 
     /// Creates a new interceptor.
     ///
