@@ -193,8 +193,9 @@ final class WillSendHook: @unchecked Sendable {
 /// An interceptor that bridges the Plugin system to Alamofire.
 ///
 /// This interceptor calls the prepare and willSend plugin methods at the
-/// appropriate points in the request lifecycle. It is `Sendable` because both
-/// stored properties are immutable and themselves `Sendable`.
+/// appropriate points in the request lifecycle and applies `RetryPolicy`
+/// through Alamofire's `RequestRetrier`. It is `Sendable` because every
+/// stored property is immutable and itself `Sendable`.
 final class IrisCallInterceptor: Alamofire.RequestInterceptor, Sendable {
     
     /// Closure to prepare the request (called during adapt).
@@ -204,17 +205,29 @@ final class IrisCallInterceptor: Alamofire.RequestInterceptor, Sendable {
     /// Alamofire request exists so plugins can wrap the live request.
     let willSendHook: WillSendHook
 
+    /// Resolved retry policy for this call. `nil` means the retrier always declines.
+    let retryPolicy: RetryPolicy?
+
+    /// Streams that have already delivered a body fragment must not restart.
+    let streamHasDeliveredChunks: @Sendable () -> Bool
+
     /// Creates a new interceptor.
     ///
     /// - Parameters:
     ///   - prepare: Closure to modify the request.
     ///   - willSendHook: Hook called before sending.
+    ///   - retryPolicy: Retry policy for this call.
+    ///   - streamHasDeliveredChunks: Returns whether a stream already yielded data.
     init(
         prepare: (@Sendable (URLRequest) -> URLRequest)? = nil,
-        willSendHook: WillSendHook = WillSendHook()
+        willSendHook: WillSendHook = WillSendHook(),
+        retryPolicy: RetryPolicy? = nil,
+        streamHasDeliveredChunks: @escaping @Sendable () -> Bool = { false }
     ) {
         self.prepare = prepare
         self.willSendHook = willSendHook
+        self.retryPolicy = retryPolicy
+        self.streamHasDeliveredChunks = streamHasDeliveredChunks
     }
 
     /// Adapts the request using the prepare closure.
@@ -226,5 +239,36 @@ final class IrisCallInterceptor: Alamofire.RequestInterceptor, Sendable {
         let request = prepare?(urlRequest) ?? urlRequest
         willSendHook.call(request)
         completion(.success(request))
+    }
+
+    /// Retries according to the resolved `RetryPolicy`.
+    func retry(
+        _ request: Request,
+        for session: Session,
+        dueTo error: Error,
+        completion: @escaping @Sendable (RetryResult) -> Void
+    ) {
+        guard let policy = retryPolicy else {
+            completion(.doNotRetry)
+            return
+        }
+        if request.isCancelled || streamHasDeliveredChunks() {
+            completion(.doNotRetry)
+            return
+        }
+        if request.retryCount >= policy.count {
+            completion(.doNotRetry)
+            return
+        }
+
+        let method = request.request?.method
+        let statusCode = request.response?.statusCode
+        guard policy.shouldRetry(method: method, statusCode: statusCode, error: error) else {
+            completion(.doNotRetry)
+            return
+        }
+
+        let delay = policy.delay(beforeRetry: request.retryCount + 1)
+        completion(delay > 0 ? .retryWithDelay(delay) : .retry)
     }
 }

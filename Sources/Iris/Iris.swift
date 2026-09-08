@@ -244,6 +244,8 @@ public struct Iris {
         configuration: IrisConfiguration,
         startedAt: CFAbsoluteTime
     ) async throws -> Response<Model> {
+        var request = request
+        request.retryPolicy = request.retryPolicy(over: configuration)
         let urlRequest = try makeURLRequest(from: request, configuration: configuration)
         
         // 4. Create interceptor (bridges Plugin system to Alamofire)
@@ -252,7 +254,9 @@ public struct Iris {
         let interceptor = IrisCallInterceptor(
             prepare: { @Sendable urlRequest in
                 plugins.reduce(urlRequest) { $1.prepare($0, target: request) }
-            }
+            },
+            retryPolicy: request.retryPolicy,
+            streamHasDeliveredChunks: { broadcaster.hasYieldedChunks }
         )
         
         // 5. Execute request based on task type. Network methods return Result
@@ -285,8 +289,10 @@ public struct Iris {
             }
         }
         
-        // 6-8. Notify plugins, process, then decode or throw
-        return try finish(delivery, request: request, configuration: configuration, startedAt: startedAt)
+        // 6-8. Restore the user's success definition, then notify plugins,
+        // process, and decode or throw.
+        let remapped = RetryPolicy.restoreUserAcceptedStatus(delivery, validation: request.validationType)
+        return try finish(remapped, request: request, configuration: configuration, startedAt: startedAt)
     }
     
     /// Decodes the response data into the specified model type.
@@ -491,10 +497,13 @@ public struct Iris {
     ) async -> NetworkDelivery {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                let validationCodes = request.validationType.statusCodes
+                let validationCodes = RetryPolicy.acceptableStatusCodes(
+                    for: request.validationType,
+                    policy: request.retryPolicy
+                )
                 var afRequest = buildRequest()
                 
-                if !validationCodes.isEmpty {
+                if let validationCodes {
                     afRequest = afRequest.validate(statusCode: validationCodes)
                 }
                 
@@ -518,10 +527,13 @@ public struct Iris {
     ) async -> NetworkDelivery {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                let validationCodes = request.validationType.statusCodes
+                let validationCodes = RetryPolicy.acceptableStatusCodes(
+                    for: request.validationType,
+                    policy: request.retryPolicy
+                )
                 var afRequest = buildRequest()
                 
-                if !validationCodes.isEmpty {
+                if let validationCodes {
                     afRequest = afRequest.validate(statusCode: validationCodes)
                 }
                 
@@ -574,19 +586,25 @@ public struct Iris {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let accumulation = StreamAccumulation()
+                let validationCodes = RetryPolicy.acceptableStatusCodes(
+                    for: request.validationType,
+                    policy: request.retryPolicy
+                )
+                let userValidationCodes = request.validationType.statusCodes
                 let streamRequest = session.requestQueue.sync {
-                    let streamRequest = session.streamRequest(
+                    var streamRequest = session.streamRequest(
                         urlRequest,
                         automaticallyCancelOnStreamError: false,
                         interceptor: interceptor
                     )
+                    if let validationCodes {
+                        streamRequest = streamRequest.validate(statusCode: validationCodes)
+                    }
                     configureWillSend(streamRequest, interceptor: interceptor, request: request, plugins: plugins)
                     return streamRequest
                 }
                 attachSidecars(streamRequest, from: request, broadcaster: broadcaster)
                 cancellationToken.setRequest(streamRequest)
-                
-                let validationCodes = request.validationType.statusCodes
                 
                 streamRequest.responseStream(on: request.chunkQueue) { stream in
                     switch stream.event {
@@ -617,7 +635,7 @@ public struct Iris {
                                 response: completion.response
                             )
                             let result: Result<HTTPResponse, IrisError>
-                            if !validationCodes.isEmpty && !validationCodes.contains(httpResponse.statusCode) {
+                            if !userValidationCodes.isEmpty && !userValidationCodes.contains(httpResponse.statusCode) {
                                 result = .failure(.statusCode(httpResponse))
                             } else {
                                 result = .success(httpResponse)

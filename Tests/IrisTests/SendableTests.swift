@@ -19,6 +19,8 @@ final class SendableTests: XCTestCase {
         assertSendable(IrisClient.shared)
         assertSendable(IrisClient())
         assertSendable(StubBehavior.immediate)
+        assertSendable(RetryPolicy(count: 2, interval: 0.1, backoff: .none))
+        assertSendable(RetryPolicy.Backoff.exponential)
         assertSendable(ValidationType.successCodes)
         assertSendable(HTTPResponse(statusCode: 200, data: Data()))
         assertSendable(Response(model: Empty(), httpResponse: HTTPResponse(statusCode: 200, data: Data())))

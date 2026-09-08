@@ -36,6 +36,7 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertTrue(config.plugins.isEmpty)
         XCTAssertNotNil(config.session)
         XCTAssertNil(config.stubBehavior)
+        XCTAssertNil(config.retryPolicy)
     }
     
     // MARK: - BaseURL Configuration Tests
@@ -300,5 +301,14 @@ final class ConfigurationTests: XCTestCase {
         } else {
             XCTFail("Expected immediate stub behavior")
         }
+    }
+
+    func testRetryBuilder() {
+        let config = IrisConfiguration()
+            .retry(count: 3, interval: 0.25, backoff: .linear)
+
+        XCTAssertEqual(config.retryPolicy?.count, 3)
+        XCTAssertEqual(config.retryPolicy?.interval, 0.25)
+        XCTAssertEqual(config.retryPolicy?.backoff, .linear)
     }
 }

@@ -86,6 +86,7 @@ final class EventBroadcaster: @unchecked Sendable {
     
     private let lock: os_unfair_lock_t
     private var didFinish = false
+    private var didYieldChunk = false
     
     private var uploadSubscribers: [AsyncStream<Progress>.Continuation] = []
     private var downloadSubscribers: [AsyncStream<Progress>.Continuation] = []
@@ -142,6 +143,15 @@ final class EventBroadcaster: @unchecked Sendable {
         }
     }
     
+    /// Whether `yieldChunk` has delivered at least one body fragment.
+    ///
+    /// Used to refuse stream retries after the caller has already seen data.
+    var hasYieldedChunks: Bool {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+        return didYieldChunk
+    }
+
     var chunks: AsyncStream<Data> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
             os_unfair_lock_lock(self.lock)
@@ -178,6 +188,7 @@ final class EventBroadcaster: @unchecked Sendable {
     func yieldChunk(_ data: Data, handlerOnQueue: Bool) {
         guard isStream else { return }
         os_unfair_lock_lock(lock)
+        didYieldChunk = true
         let subscribers = didFinish ? nil : chunkSubscribers
         os_unfair_lock_unlock(lock)
         notify(chunkHandler, queue: chunkQueue, handlerOnQueue: handlerOnQueue, value: data)

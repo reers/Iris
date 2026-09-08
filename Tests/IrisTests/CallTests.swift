@@ -38,6 +38,16 @@ final class CallTests: XCTestCase {
         
         XCTAssertEqual(request.timeout, 60)
     }
+
+    func testRetryConfiguration() {
+        let request = Call<Empty>()
+            .retry(count: 2, interval: 0.5, backoff: .none)
+
+        XCTAssertEqual(request.retryPolicy?.count, 2)
+        XCTAssertEqual(request.retryPolicy?.interval, 0.5)
+        XCTAssertEqual(request.retryPolicy?.backoff, RetryPolicy.Backoff.none)
+        XCTAssertEqual(request.retryPolicy?.idempotentOnly, true)
+    }
     
     func testTimeoutFallsBackToConfiguration() {
         Iris.configure(IrisConfiguration().timeout(45))

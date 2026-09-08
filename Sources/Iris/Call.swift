@@ -75,6 +75,9 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     
     /// The validation type for response status codes.
     public var validationType: ValidationType = .none
+
+    /// Per-call retry policy. `nil` falls back to `IrisConfiguration.retryPolicy`.
+    public var retryPolicy: RetryPolicy?
     
     /// Sample data for stubbing during testing.
     public var sampleData: Data = Data()
@@ -131,6 +134,16 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     /// Resolves the timeout against a specific configuration snapshot.
     func timeout(over configuration: IrisConfiguration) -> TimeInterval {
         _timeout ?? service?.timeout ?? configuration.defaultTimeout
+    }
+
+    /// Resolves retry against a specific configuration snapshot.
+    ///
+    /// A call-level policy wins, including `count == 0` which disables a
+    /// configuration default. `nil` means no retry.
+    func retryPolicy(over configuration: IrisConfiguration) -> RetryPolicy? {
+        let policy = retryPolicy ?? configuration.retryPolicy
+        guard let policy, policy.count > 0 else { return nil }
+        return policy
     }
     
     /// Custom JSON decoder for response parsing.
@@ -206,6 +219,40 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
         var request = self
         request._timeout = timeout
         return request
+    }
+
+    /// Sets a retry policy, overriding the configuration default.
+    ///
+    /// - Parameter policy: The retry policy. `count` of `0` disables retry.
+    /// - Returns: A new call with the updated retry policy.
+    public func retry(_ policy: RetryPolicy) -> Call<ResponseType> {
+        var request = self
+        request.retryPolicy = policy
+        return request
+    }
+
+    /// Retries retryable failures a limited number of times.
+    ///
+    /// - Parameters:
+    ///   - count: Extra retries after the first attempt. `0` disables retry.
+    ///   - interval: Base delay in seconds before the first retry. Default is `0.5`.
+    ///   - backoff: Delay growth. Default is exponential.
+    ///   - idempotentOnly: When `true`, POST / PATCH are not retried. Default is `true`.
+    /// - Returns: A new call with the updated retry policy.
+    public func retry(
+        count: Int,
+        interval: TimeInterval = 0.5,
+        backoff: RetryPolicy.Backoff = .exponential,
+        idempotentOnly: Bool = true
+    ) -> Call<ResponseType> {
+        retry(
+            RetryPolicy(
+                count: count,
+                interval: interval,
+                backoff: backoff,
+                idempotentOnly: idempotentOnly
+            )
+        )
     }
     
     /// Sets the client used to execute this request.

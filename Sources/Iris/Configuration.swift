@@ -74,6 +74,12 @@ public struct IrisConfiguration: Sendable {
     /// Set to a non-nil value to enable stubbing globally. Individual requests
     /// can override this setting.
     public var stubBehavior: StubBehavior?
+
+    /// Default retry policy for live requests that do not set their own.
+    ///
+    /// Stub responses never retry. A call-level `.retry(...)` overrides this,
+    /// including `.retry(count: 0)` which disables the default.
+    public var retryPolicy: RetryPolicy?
     
     /// Creates a new configuration with default values.
     ///
@@ -86,6 +92,7 @@ public struct IrisConfiguration: Sendable {
     ///   - plugins: The plugin list. Default is empty.
     ///   - session: The Alamofire session. Default is `Session.default`.
     ///   - stubBehavior: The stub behavior. Default is nil (no stubbing).
+    ///   - retryPolicy: Default retry policy. Default is nil (no retry).
     public init(
         baseURL: URL? = nil,
         defaultHeaders: [String: String] = [:],
@@ -94,7 +101,8 @@ public struct IrisConfiguration: Sendable {
         jsonEncoder: JSONEncoder = JSONEncoder(),
         plugins: [any PluginType] = [],
         session: Session = Session.default,
-        stubBehavior: StubBehavior? = nil
+        stubBehavior: StubBehavior? = nil,
+        retryPolicy: RetryPolicy? = nil
     ) {
         self.baseURL = baseURL
         self.defaultHeaders = defaultHeaders
@@ -104,6 +112,7 @@ public struct IrisConfiguration: Sendable {
         self.plugins = plugins
         self.session = session
         self.stubBehavior = stubBehavior
+        self.retryPolicy = retryPolicy
     }
 }
 
@@ -230,6 +239,40 @@ public extension IrisConfiguration {
         var config = self
         config.stubBehavior = behavior
         return config
+    }
+
+    /// Sets the default retry policy.
+    ///
+    /// - Parameter policy: The retry policy. `count` of `0` disables retry.
+    /// - Returns: A new configuration with the updated retry policy.
+    func retry(_ policy: RetryPolicy) -> IrisConfiguration {
+        var config = self
+        config.retryPolicy = policy
+        return config
+    }
+
+    /// Sets a default retry policy for live requests.
+    ///
+    /// - Parameters:
+    ///   - count: Extra retries after the first attempt. `0` disables retry.
+    ///   - interval: Base delay in seconds before the first retry. Default is `0.5`.
+    ///   - backoff: Delay growth. Default is exponential.
+    ///   - idempotentOnly: When `true`, POST / PATCH are not retried. Default is `true`.
+    /// - Returns: A new configuration with the updated retry policy.
+    func retry(
+        count: Int,
+        interval: TimeInterval = 0.5,
+        backoff: RetryPolicy.Backoff = .exponential,
+        idempotentOnly: Bool = true
+    ) -> IrisConfiguration {
+        retry(
+            RetryPolicy(
+                count: count,
+                interval: interval,
+                backoff: backoff,
+                idempotentOnly: idempotentOnly
+            )
+        )
     }
     
     /// Sets the JSON decoder.
