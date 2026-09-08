@@ -228,18 +228,12 @@ final class EventBroadcaster: @unchecked Sendable {
         if handlerOnQueue {
             handler(value)
         } else {
-            invokeSynchronously(queue) { handler(value) }
+            invokeAsynchronously(queue) { handler(value) }
         }
     }
 }
 
-/// Runs `work` on `queue` and waits for it.
-///
-/// `DispatchQueue.main.sync` from the main thread deadlocks, so that case runs inline.
-func invokeSynchronously(_ queue: DispatchQueue, _ work: () -> Void) {
-    if Thread.isMainThread && queue === DispatchQueue.main {
-        work()
-    } else {
-        queue.sync(execute: work)
-    }
+/// Schedules `work` on `queue` without blocking the caller.
+func invokeAsynchronously(_ queue: DispatchQueue, _ work: @escaping () -> Void) {
+    queue.async(execute: work)
 }

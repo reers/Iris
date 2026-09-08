@@ -148,6 +148,9 @@ public struct Iris {
                 try await body(session)
                 return try await valueTask.value
             } catch {
+                valueTask.cancel()
+                cancellationToken.cancel()
+                broadcaster.finish()
                 _ = await valueTask.result
                 throw error
             }

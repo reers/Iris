@@ -163,29 +163,64 @@ final class EventBroadcasterTests: XCTestCase {
     /// Recipe handlers fire even when no stream subscriber exists.
     func testRecipeHandlerReceivesValuesWithoutStreamSubscribers() {
         let received = SendableArray<Int64>()
+        let handlerCalled = expectation(description: "Recipe handler should be called")
         let call = Call<Data>().onDownloadProgress(on: .global()) { progress in
             received.append(progress.completedUnitCount)
+            handlerCalled.fulfill()
         }
         let broadcaster = EventBroadcaster(from: call)
-        
+
         broadcaster.yieldDownload(makeProgress(42), handlerOnQueue: false)
         broadcaster.finish()
-        
+
+        wait(for: [handlerCalled], timeout: 1)
+        XCTAssertEqual(received.values, [42])
+    }
+
+    /// Dispatching sidecar handlers must not synchronously block cooperative
+    /// Swift concurrency threads while a target queue is busy.
+    func testRecipeHandlerDeliveryDoesNotBlockCallerWhenQueueIsBusy() {
+        let queue = DispatchQueue(label: "iris.tests.busy-sidecar-queue")
+        let busyStarted = expectation(description: "Queue should become busy")
+        let handlerCalled = expectation(description: "Recipe handler should eventually be called")
+        let received = SendableArray<Int64>()
+
+        queue.async {
+            busyStarted.fulfill()
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        wait(for: [busyStarted], timeout: 1)
+
+        let call = Call<Data>().onDownloadProgress(on: queue) { progress in
+            received.append(progress.completedUnitCount)
+            handlerCalled.fulfill()
+        }
+        let broadcaster = EventBroadcaster(from: call)
+
+        let start = Date()
+        broadcaster.yieldDownload(makeProgress(42), handlerOnQueue: false)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 0.1)
+        wait(for: [handlerCalled], timeout: 1)
         XCTAssertEqual(received.values, [42])
     }
     
     /// Recipe handlers receive snapshots too, not the mutable shared instance.
     func testRecipeHandlerReceivesSnapshot() {
         let received = SendableArray<Progress>()
+        let handlerCalled = expectation(description: "Recipe handler should be called")
         let call = Call<Data>().onDownloadProgress(on: .global()) { progress in
             received.append(progress)
+            handlerCalled.fulfill()
         }
         let broadcaster = EventBroadcaster(from: call)
-        
+
         let shared = makeProgress(10)
         broadcaster.yieldDownload(shared, handlerOnQueue: false)
         shared.completedUnitCount = 90
-        
+
+        wait(for: [handlerCalled], timeout: 1)
         XCTAssertEqual(received.values.first?.completedUnitCount, 10)
     }
 }

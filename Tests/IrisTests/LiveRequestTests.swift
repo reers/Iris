@@ -142,6 +142,40 @@ final class LiveRequestTests: XCTestCase {
         task.cancel()
         await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
     }
+
+    func testThrowingSendScopeCancelsUnderlyingRequest() async {
+        struct BodyFailure: Error {}
+
+        let didStartUnderlyingRequest = expectation(description: "Underlying request should start")
+        let didCancelUnderlyingRequest = expectation(description: "Underlying request should be cancelled")
+        StubURLProtocol.responseDelay = 5
+        StubURLProtocol.onStartLoading = {
+            didStartUnderlyingRequest.fulfill()
+        }
+        StubURLProtocol.onStopLoading = {
+            didCancelUnderlyingRequest.fulfill()
+        }
+        stubBody(Data("{}".utf8))
+
+        let task = _Concurrency.Task {
+            do {
+                _ = try await Call<Empty>()
+                    .path("/slow")
+                    .send { _ in
+                        await fulfillment(of: [didStartUnderlyingRequest], timeout: 1)
+                        throw BodyFailure()
+                    }
+                XCTFail("Expected body failure")
+            } catch is BodyFailure {
+                // Expected.
+            } catch {
+                XCTFail("Expected BodyFailure, got \(error)")
+            }
+        }
+
+        await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
+        task.cancel()
+    }
     
     private func stubBody(
         _ data: Data,

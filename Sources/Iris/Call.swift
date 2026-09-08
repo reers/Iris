@@ -9,6 +9,10 @@
 import Alamofire
 import Foundation
 
+private struct CallbackResultDelivery<Success, Failure: Error>: @unchecked Sendable {
+    let result: Result<Success, Failure>
+}
+
 /// A network request built using a chainable API.
 ///
 /// `Call` is Iris's signature feature that allows you to define all aspects
@@ -771,7 +775,8 @@ public struct Call<ResponseType: Decodable>: TargetType {
             } catch {
                 result = .failure(.underlying(error, nil))
             }
-            queue.async { completion(result) }
+            let delivery = CallbackResultDelivery(result: result)
+            queue.async { completion(delivery.result) }
         }
     }
     
