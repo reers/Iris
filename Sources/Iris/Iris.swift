@@ -363,8 +363,8 @@ public struct Iris {
     
     /// Maps an Alamofire callback into a plugin-facing result.
     ///
-    /// An HTTP response with a transport/validation error becomes `.statusCode`.
-    /// A failure with no HTTP response (timeout, DNS, connectivity) becomes `.underlying`.
+    /// Validation failures become `.statusCode`. Transport failures remain
+    /// `.underlying`, even if response headers were already received.
     static func mapNetworkResult(
         data: Data,
         request: URLRequest?,
@@ -382,10 +382,10 @@ public struct Iris {
             return .success(rawResponse)
         }
         
-        if response != nil {
+        if let afError = error.asAFError, afError.isResponseValidationError {
             return .failure(.statusCode(rawResponse))
         }
-        return .failure(.underlying(error, rawResponse))
+        return .failure(.underlying(error, response == nil ? nil : rawResponse))
     }
     
     /// Attaches Alamofire progress closures as siblings of the response handler.

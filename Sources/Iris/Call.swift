@@ -667,7 +667,25 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - encoder: The encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
     /// - Returns: A new call with the encoded stub data.
     public func stub<T: Encodable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) -> Call<ResponseType> {
-        stub((try? encoder.encode(model)) ?? Data())
+        do {
+            return try stubEncoded(model, encoder: encoder)
+        } catch {
+            preconditionFailure("Failed to encode stub model: \(error)")
+        }
+    }
+
+    /// Sets stub data from an Encodable object, surfacing encoding failures.
+    ///
+    /// Use this overload when tests need to assert or recover from custom
+    /// `Encodable` failures instead of failing fast.
+    ///
+    /// - Parameters:
+    ///   - model: The model to encode as stub data.
+    ///   - encoder: The encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
+    /// - Returns: A new call with the encoded stub data.
+    /// - Throws: Any error thrown by `JSONEncoder`.
+    public func stubEncoded<T: Encodable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) throws -> Call<ResponseType> {
+        stub(try encoder.encode(model))
     }
     
     /// Sets stub data from a string.

@@ -458,6 +458,28 @@ final class PluginTests: XCTestCase {
             XCTAssertEqual(response.statusCode, 404)
         }
     }
+
+    func testTransportFailureAfterResponseHeadersIsUnderlyingError() async {
+        let response = HTTPURLResponse(
+            url: URL(string: "https://example.com/interrupted")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+
+        let result = Iris.mapNetworkResult(
+            data: Data("partial".utf8),
+            request: nil,
+            response: response,
+            error: URLError(.networkConnectionLost)
+        )
+
+        if case .failure(.underlying(_, let response)) = result {
+            XCTAssertEqual(response?.statusCode, 200)
+        } else {
+            XCTFail("Expected underlying failure, got \(result)")
+        }
+    }
 }
 
 // MARK: - Mock CallType

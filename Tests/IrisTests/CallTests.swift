@@ -614,6 +614,19 @@ final class CallTests: XCTestCase {
         XCTAssertNil(json["user_name"])
     }
     
+    func testThrowingStubFromEncodableSurfacesEncodingError() {
+        struct EncodingFailure: Error {}
+        struct FailingEncodable: Encodable {
+            func encode(to encoder: Encoder) throws {
+                throw EncodingFailure()
+            }
+        }
+
+        XCTAssertThrowsError(try Call<Empty>().stubEncoded(FailingEncodable())) { error in
+            XCTAssertTrue(error is EncodingFailure)
+        }
+    }
+
     func testStubFromString() {
         let request = Call<Empty>()
             .stub("{\"name\": \"test\"}")

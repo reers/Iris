@@ -5,6 +5,7 @@
 //  Tests for IrisError types and properties.
 //
 
+import Alamofire
 import XCTest
 @testable import Iris
 
@@ -226,14 +227,14 @@ final class IrisErrorTests: XCTestCase {
     
     // MARK: - Network Result Mapping Tests
     
-    func testHTTPErrorMapsToStatusCode() {
+    func testValidationErrorMapsToStatusCode() {
         let url = URL(string: "https://example.com")!
         let http = HTTPURLResponse(url: url, statusCode: 404, httpVersion: nil, headerFields: nil)
         let result = Iris.mapNetworkResult(
             data: Data(),
             request: nil,
             response: http,
-            error: URLError(.badServerResponse)
+            error: AFError.responseValidationFailed(reason: .unacceptableStatusCode(code: 404))
         )
         
         if case .failure(.statusCode(let mapped)) = result {
