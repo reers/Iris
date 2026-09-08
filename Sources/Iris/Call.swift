@@ -839,7 +839,10 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     /// Streams response body bytes without accumulating them into a final `Response`.
     ///
     /// This is a terminal API, similar to Alamofire's `responseStream`. Cancelling
-    /// the consuming task cancels the underlying request.
+    /// the consuming task cancels the underlying request. Calling this method only
+    /// creates the sequence; the request starts when the sequence is first iterated.
+    /// Use `stream().send { ... }` instead when you need chunks plus a final
+    /// decoded `Response`.
     ///
     /// - Returns: An async sequence of raw `Data` chunks.
     public func streamBytes() -> AsyncThrowingStream<Data, Error> {
@@ -849,7 +852,8 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     /// Streams response body text chunks without accumulating them into a final `Response`.
     ///
     /// This is a terminal API, similar to Alamofire's `responseStreamString`.
-    /// It does not parse lines or Server-Sent Events.
+    /// Calling this method only creates the sequence; the request starts when the
+    /// sequence is first iterated. It does not parse lines or Server-Sent Events.
     ///
     /// - Returns: An async sequence of `String` chunks.
     public func streamStrings() -> AsyncThrowingStream<String, Error> {

@@ -18,7 +18,7 @@ Iris is a networking library built on top of [Alamofire](https://github.com/Alam
 - **Async/Await**: Modern Swift concurrency support out of the box
 - **Callbacks**: Thin `send` / `fetch` completion wrappers for existing callback call sites
 - **Progress**: Upload and download `Progress` as recipe handlers or `send { session in }` streams
-- **HTTP Streaming**: `stream()` with `onChunk` or `session.chunks`
+- **HTTP Streaming**: `stream()` sidecars with a final response, or lazy terminal byte/string streams
 - **Configurable**: Shared or custom clients, service-scoped defaults, and per-request overrides
 - **Plugin System**: Intercept and modify requests/responses
 - **Stubbing**: First-class support for testing with stubbed responses
@@ -180,6 +180,14 @@ Call.data()
         print(String(data: data, encoding: .utf8) ?? "")
     }
     .send { _ in }
+
+for try await text in Call<Empty>()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .streamStrings() {
+    print(text)
+}
 
 // Concurrency sidecars — live session does not escape the closure
 let media = try await Call<Media>()
@@ -474,6 +482,43 @@ Call.data()
 Progress uses Foundation `Progress`. When `Content-Length` is missing, `fractionCompleted` may stay `0`.
 
 `stream()` applies to data tasks only — not file upload or file download. Mark the recipe with `stream()` so chunks are delivered; `Empty` discards the concatenated body, `Data` / `String` keep it as the raw model, other `Decodable` types JSON-decode the concatenation.
+
+#### Terminal streams
+
+Use `streamBytes()` / `streamStrings()` when you want Alamofire-style streaming
+without accumulating the full body or returning a final `Response`. These methods
+are terminal APIs: they return an `AsyncThrowingStream` directly.
+
+Creating the sequence does not start the request. The request starts when the
+sequence is first iterated, matching Iris’s normal “build first, execute later”
+model.
+
+```swift
+let stream = Call<Empty>()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .streamBytes()
+
+// No network request has started yet.
+
+for try await chunk in stream {
+    print(String(data: chunk, encoding: .utf8) ?? "")
+}
+
+for try await text in Call<Empty>()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .streamStrings() {
+    print(text)
+}
+```
+
+Terminal streams still apply request preparation, `willSend`, validation, and
+transport errors. Cancelling the consuming task cancels the underlying request.
+They do not parse lines or Server-Sent Events; use a protocol-specific parser on
+top if you need SSE events.
 
 #### AsyncStream (Swift concurrency)
 

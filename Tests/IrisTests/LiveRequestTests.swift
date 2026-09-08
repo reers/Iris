@@ -133,6 +133,27 @@ final class LiveRequestTests: XCTestCase {
         XCTAssertEqual(chunks.reduce(into: Data()) { $0.append($1) }, payload)
     }
 
+    func testStreamBytesDoesNotStartUntilIterated() async throws {
+        let didStart = SendableBox(false)
+        StubURLProtocol.onStartLoading = {
+            didStart.value = true
+        }
+        stubBody(Data("lazy".utf8), chunkSize: 2, chunkInterval: 0.01)
+
+        let stream = Call<Empty>()
+            .path("/v1/lazy-stream-bytes")
+            .streamBytes()
+
+        try await _Concurrency.Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(didStart.value)
+
+        var iterator = stream.makeAsyncIterator()
+        let first = try await iterator.next()
+
+        XCTAssertNotNil(first)
+        XCTAssertTrue(didStart.value)
+    }
+
     func testStreamStringsYieldsStringChunks() async throws {
         let payload = Data("hello-stream".utf8)
         stubBody(payload, chunkSize: 3, chunkInterval: 0.01)
@@ -146,6 +167,27 @@ final class LiveRequestTests: XCTestCase {
         
         XCTAssertGreaterThan(chunks.count, 1)
         XCTAssertEqual(chunks.joined(), "hello-stream")
+    }
+
+    func testStreamStringsDoesNotStartUntilIterated() async throws {
+        let didStart = SendableBox(false)
+        StubURLProtocol.onStartLoading = {
+            didStart.value = true
+        }
+        stubBody(Data("lazy".utf8), chunkSize: 2, chunkInterval: 0.01)
+
+        let stream = Call<Empty>()
+            .path("/v1/lazy-stream-strings")
+            .streamStrings()
+
+        try await _Concurrency.Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(didStart.value)
+
+        var iterator = stream.makeAsyncIterator()
+        let first = try await iterator.next()
+
+        XCTAssertNotNil(first)
+        XCTAssertTrue(didStart.value)
     }
 
     func testStreamBytesValidatesStatusCodes() async {

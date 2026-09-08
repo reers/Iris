@@ -69,12 +69,16 @@ public final class IrisClient: @unchecked Sendable {
         return response.model
     }
 
-    /// Streams response body bytes using this client's configuration.
+    /// Lazily streams response body bytes using this client's configuration.
+    ///
+    /// The request starts when the returned sequence is first iterated.
     public func streamBytes<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<Data, Error> {
         Iris.streamBytes(request.bound(to: self), using: self)
     }
 
-    /// Streams response body text chunks using this client's configuration.
+    /// Lazily streams response body text chunks using this client's configuration.
+    ///
+    /// The request starts when the returned sequence is first iterated.
     public func streamStrings<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<String, Error> {
         Iris.streamStrings(request.bound(to: self), using: self)
     }

@@ -137,6 +137,192 @@ private final class TerminalStreamCompletion: @unchecked Sendable {
     }
 }
 
+/// Lazily starts a terminal stream on first iteration and bridges callback chunks
+/// into an `AsyncThrowingStream(unfolding:)` sequence.
+private final class TerminalStreamEmitter<Element: Sendable>: @unchecked Sendable {
+    private let lock: os_unfair_lock_t
+    private var buffered: [Element] = []
+    private var waiter: CheckedContinuation<Element?, any Error>?
+    private var didStart = false
+    private var didFinish = false
+    private var terminalError: (any Error)?
+    private var onStart: (@Sendable () -> Void)?
+    private var onCancel: (@Sendable () -> Void)?
+
+    init() {
+        lock = .allocate(capacity: 1)
+        lock.initialize(to: os_unfair_lock_s())
+    }
+
+    deinit {
+        lock.deinitialize(count: 1)
+        lock.deallocate()
+    }
+
+    func setStart(_ onStart: @escaping @Sendable () -> Void) {
+        os_unfair_lock_lock(lock)
+        self.onStart = onStart
+        os_unfair_lock_unlock(lock)
+    }
+
+    func setCancel(_ onCancel: @escaping @Sendable () -> Void) {
+        os_unfair_lock_lock(lock)
+        self.onCancel = onCancel
+        os_unfair_lock_unlock(lock)
+    }
+
+    func next() async throws -> Element? {
+        let cancellation = CancellationHandler(emitter: self)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let start = prepareNext(continuation)
+                start?()
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    func yield(_ value: Element) {
+        os_unfair_lock_lock(lock)
+        guard !didFinish else {
+            os_unfair_lock_unlock(lock)
+            return
+        }
+        if let waiter {
+            self.waiter = nil
+            os_unfair_lock_unlock(lock)
+            waiter.resume(returning: value)
+        } else {
+            buffered.append(value)
+            os_unfair_lock_unlock(lock)
+        }
+    }
+
+    func finish(throwing error: (any Error)? = nil) {
+        os_unfair_lock_lock(lock)
+        guard !didFinish else {
+            os_unfair_lock_unlock(lock)
+            return
+        }
+        didFinish = true
+        terminalError = error
+        let waiter = self.waiter
+        self.waiter = nil
+        onStart = nil
+        onCancel = nil
+        os_unfair_lock_unlock(lock)
+
+        if let waiter {
+            if let error {
+                waiter.resume(throwing: error)
+            } else {
+                waiter.resume(returning: nil)
+            }
+        }
+    }
+
+    func cancel() {
+        os_unfair_lock_lock(lock)
+        guard !didFinish else {
+            os_unfair_lock_unlock(lock)
+            return
+        }
+        didFinish = true
+        let waiter = self.waiter
+        let onCancel = self.onCancel
+        self.waiter = nil
+        self.onStart = nil
+        self.onCancel = nil
+        os_unfair_lock_unlock(lock)
+
+        onCancel?()
+        waiter?.resume(throwing: CancellationError())
+    }
+
+    private func prepareNext(_ continuation: CheckedContinuation<Element?, any Error>) -> (@Sendable () -> Void)? {
+        os_unfair_lock_lock(lock)
+        let start: (@Sendable () -> Void)?
+        if didStart {
+            start = nil
+        } else {
+            didStart = true
+            start = onStart
+        }
+
+        if !buffered.isEmpty {
+            let value = buffered.removeFirst()
+            os_unfair_lock_unlock(lock)
+            continuation.resume(returning: value)
+            return start
+        }
+        if didFinish {
+            let error = terminalError
+            os_unfair_lock_unlock(lock)
+            if let error {
+                continuation.resume(throwing: error)
+            } else {
+                continuation.resume(returning: nil)
+            }
+            return start
+        }
+
+        waiter = continuation
+        os_unfair_lock_unlock(lock)
+        return start
+    }
+
+    private struct CancellationHandler: Sendable {
+        weak var emitter: TerminalStreamEmitter?
+
+        func cancel() {
+            emitter?.cancel()
+        }
+    }
+}
+
+/// Stores cancellation hooks for a lazily-started terminal stream.
+private final class TerminalStreamCancellation: @unchecked Sendable {
+    private let lock: os_unfair_lock_t
+    private var isCancelled = false
+    private var task: Task<Void, Never>?
+    private var token: AlamofireRequestCancellationToken?
+
+    init() {
+        lock = .allocate(capacity: 1)
+        lock.initialize(to: os_unfair_lock_s())
+    }
+
+    deinit {
+        lock.deinitialize(count: 1)
+        lock.deallocate()
+    }
+
+    func set(task: Task<Void, Never>, token: AlamofireRequestCancellationToken) {
+        os_unfair_lock_lock(lock)
+        if isCancelled {
+            os_unfair_lock_unlock(lock)
+            task.cancel()
+            token.cancel()
+            return
+        }
+        self.task = task
+        self.token = token
+        os_unfair_lock_unlock(lock)
+    }
+
+    func cancel() {
+        os_unfair_lock_lock(lock)
+        isCancelled = true
+        let task = self.task
+        let token = self.token
+        os_unfair_lock_unlock(lock)
+
+        task?.cancel()
+        token?.cancel()
+    }
+}
+
 /// Network-layer outcome plus session metrics. Plugins still see only `result`.
 ///
 /// `@unchecked Sendable` is valid because `URLSessionTaskMetrics` is an
@@ -246,7 +432,8 @@ public struct Iris {
 
     /// Streams response body bytes without accumulating them into a final response.
     ///
-    /// This is a terminal API, similar to Alamofire's `responseStream`.
+    /// This is a lazy terminal API, similar to Alamofire's `responseStream`:
+    /// the request starts when the returned sequence is first iterated.
     public static func streamBytes<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<Data, Error> {
         request.resolvedClient.streamBytes(request)
     }
@@ -260,7 +447,8 @@ public struct Iris {
 
     /// Streams response body text chunks without accumulating them into a final response.
     ///
-    /// This is a terminal API, similar to Alamofire's `responseStreamString`.
+    /// This is a lazy terminal API, similar to Alamofire's `responseStreamString`:
+    /// the request starts when the returned sequence is first iterated.
     public static func streamStrings<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<String, Error> {
         request.resolvedClient.streamStrings(request)
     }
@@ -278,49 +466,60 @@ public struct Iris {
         _ request: Call<Model>,
         using client: IrisClient
     ) -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream { continuation in
+        let emitter = TerminalStreamEmitter<Data>()
+        emitter.setStart { [weak emitter] in
+            guard let emitter else { return }
+            let cancellation = TerminalStreamCancellation()
             let cancellationToken = AlamofireRequestCancellationToken()
+            emitter.setCancel { cancellation.cancel() }
             let streamTask = Task {
                 await runByteTerminalStream(
                     request,
                     using: client,
                     cancellationToken: cancellationToken,
-                    continuation: continuation
+                    yield: { emitter.yield($0) },
+                    finish: { emitter.finish(throwing: $0) }
                 )
             }
-            continuation.onTermination = { @Sendable _ in
-                streamTask.cancel()
-                cancellationToken.cancel()
-            }
+            cancellation.set(task: streamTask, token: cancellationToken)
         }
+        return AsyncThrowingStream(unfolding: {
+            try await emitter.next()
+        })
     }
 
     private static func makeStringTerminalStream<Model: Decodable & Sendable>(
         _ request: Call<Model>,
         using client: IrisClient
     ) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        let emitter = TerminalStreamEmitter<String>()
+        emitter.setStart { [weak emitter] in
+            guard let emitter else { return }
+            let cancellation = TerminalStreamCancellation()
             let cancellationToken = AlamofireRequestCancellationToken()
+            emitter.setCancel { cancellation.cancel() }
             let streamTask = Task {
                 await runStringTerminalStream(
                     request,
                     using: client,
                     cancellationToken: cancellationToken,
-                    continuation: continuation
+                    yield: { emitter.yield($0) },
+                    finish: { emitter.finish(throwing: $0) }
                 )
             }
-            continuation.onTermination = { @Sendable _ in
-                streamTask.cancel()
-                cancellationToken.cancel()
-            }
+            cancellation.set(task: streamTask, token: cancellationToken)
         }
+        return AsyncThrowingStream(unfolding: {
+            try await emitter.next()
+        })
     }
 
     private static func runByteTerminalStream<Model: Decodable & Sendable>(
         _ request: Call<Model>,
         using client: IrisClient,
         cancellationToken: AlamofireRequestCancellationToken,
-        continuation: AsyncThrowingStream<Data, Error>.Continuation
+        yield: @escaping @Sendable (Data) -> Void,
+        finish: @escaping @Sendable ((any Error)?) -> Void
     ) async {
         do {
             let configuration = client.configuration
@@ -330,9 +529,9 @@ public struct Iris {
                     request,
                     behavior: stubBehavior,
                     configuration: configuration,
-                    yield: { continuation.yield($0) }
+                    yield: yield
                 )
-                continuation.finish()
+                finish(nil)
                 return
             }
 
@@ -340,11 +539,11 @@ public struct Iris {
                 request,
                 configuration: configuration,
                 cancellationToken: cancellationToken,
-                continuation: continuation
+                yield: yield
             )
-            continuation.finish()
+            finish(nil)
         } catch {
-            continuation.finish(throwing: error)
+            finish(error)
         }
     }
 
@@ -352,7 +551,8 @@ public struct Iris {
         _ request: Call<Model>,
         using client: IrisClient,
         cancellationToken: AlamofireRequestCancellationToken,
-        continuation: AsyncThrowingStream<String, Error>.Continuation
+        yield: @escaping @Sendable (String) -> Void,
+        finish: @escaping @Sendable ((any Error)?) -> Void
     ) async {
         do {
             let configuration = client.configuration
@@ -364,11 +564,11 @@ public struct Iris {
                     configuration: configuration,
                     yield: { data in
                         if let string = String(data: data, encoding: .utf8) {
-                            continuation.yield(string)
+                            yield(string)
                         }
                     }
                 )
-                continuation.finish()
+                finish(nil)
                 return
             }
 
@@ -376,11 +576,11 @@ public struct Iris {
                 request,
                 configuration: configuration,
                 cancellationToken: cancellationToken,
-                continuation: continuation
+                yield: yield
             )
-            continuation.finish()
+            finish(nil)
         } catch {
-            continuation.finish(throwing: error)
+            finish(error)
         }
     }
     
@@ -582,7 +782,7 @@ public struct Iris {
         _ request: Call<Model>,
         configuration: IrisConfiguration,
         cancellationToken: AlamofireRequestCancellationToken,
-        continuation: AsyncThrowingStream<Data, Error>.Continuation
+        yield: @escaping @Sendable (Data) -> Void
     ) async throws {
         var requestWithResolvedRetry = request
         requestWithResolvedRetry.retryPolicy = requestWithResolvedRetry.retryPolicy(over: configuration)
@@ -623,7 +823,7 @@ public struct Iris {
                     switch stream.event {
                     case .stream(.success(let data)):
                         streamState.markYieldedChunk()
-                        continuation.yield(data)
+                        yield(data)
                     case .complete(let streamCompletion):
                         let delivery = terminalDelivery(
                             data: Data(),
@@ -652,7 +852,7 @@ public struct Iris {
         _ request: Call<Model>,
         configuration: IrisConfiguration,
         cancellationToken: AlamofireRequestCancellationToken,
-        continuation: AsyncThrowingStream<String, Error>.Continuation
+        yield: @escaping @Sendable (String) -> Void
     ) async throws {
         var requestWithResolvedRetry = request
         requestWithResolvedRetry.retryPolicy = requestWithResolvedRetry.retryPolicy(over: configuration)
@@ -693,7 +893,7 @@ public struct Iris {
                     switch stream.event {
                     case .stream(.success(let string)):
                         streamState.markYieldedChunk()
-                        continuation.yield(string)
+                        yield(string)
                     case .complete(let streamCompletion):
                         let delivery = terminalDelivery(
                             data: Data(),
