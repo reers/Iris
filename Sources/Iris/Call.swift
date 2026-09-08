@@ -85,16 +85,24 @@ public struct Call<ResponseType: Decodable>: TargetType {
     
     /// Custom base URL that overrides the global configuration.
     private var _baseURL: URL?
-    
+
     /// Service-scoped defaults applied between global configuration and request overrides.
     var service: IrisService?
-    
+
+    /// Client used to execute this request. Defaults to `IrisClient.shared`.
+    var client: IrisClient?
+
     /// Custom sample response that overrides the default 200 + sampleData stub.
     private var _sampleResponseClosure: Endpoint.SampleResponseClosure?
+
+    /// The client that will execute this request.
+    var resolvedClient: IrisClient {
+        client ?? service?.client ?? IrisClient.shared
+    }
     
     /// The per-request or globally configured base URL, if any.
     var configuredBaseURL: URL? {
-        configuredBaseURL(over: Iris.configuration)
+        configuredBaseURL(over: resolvedClient.configuration)
     }
     
     /// Resolves the base URL against a specific configuration snapshot.
@@ -113,7 +121,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// Uses the per-request timeout when set, otherwise `IrisConfiguration.defaultTimeout`
     /// (which defaults to 30 seconds).
     public var timeout: TimeInterval {
-        get { timeout(over: Iris.configuration) }
+        get { timeout(over: resolvedClient.configuration) }
         set { _timeout = newValue }
     }
     
@@ -197,6 +205,22 @@ public struct Call<ResponseType: Decodable>: TargetType {
         return request
     }
     
+    /// Sets the client used to execute this request.
+    ///
+    /// - Parameter client: The client whose configuration and session should be used.
+    /// - Returns: A new call bound to the given client.
+    public func client(_ client: IrisClient) -> Call<ResponseType> {
+        var request = self
+        request.client = client
+        return request
+    }
+
+    func bound(to client: IrisClient) -> Call<ResponseType> {
+        var request = self
+        request.client = client
+        return request
+    }
+
     // MARK: - Headers Configuration
     
     /// Sets all request headers.

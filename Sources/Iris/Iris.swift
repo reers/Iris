@@ -110,11 +110,15 @@ public struct Iris {
     /// - Returns: A `Response<Model>` containing the decoded model and raw response data.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
     public static func send<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
+        try await request.resolvedClient.send(request)
+    }
+
+    static func send<Model: Decodable>(_ request: Call<Model>, using client: IrisClient) async throws -> Response<Model> {
         let broadcaster = EventBroadcaster(from: request)
         let cancellationToken = AlamofireRequestCancellationToken()
         return try await withTaskCancellationHandler {
             defer { broadcaster.finish() }
-            return try await execute(request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            return try await execute(request, broadcaster: broadcaster, cancellationToken: cancellationToken, client: client)
         } onCancel: {
             cancellationToken.cancel()
             broadcaster.finish()
@@ -133,12 +137,20 @@ public struct Iris {
         _ request: Call<Model>,
         _ body: (CallSession<Model>) async throws -> Void
     ) async throws -> Response<Model> {
+        try await request.resolvedClient.send(request, body)
+    }
+
+    static func send<Model: Decodable>(
+        _ request: Call<Model>,
+        _ body: (CallSession<Model>) async throws -> Void,
+        using client: IrisClient
+    ) async throws -> Response<Model> {
         let broadcaster = EventBroadcaster(from: request)
         let cancellationToken = AlamofireRequestCancellationToken()
         
         let valueTask = Task<Response<Model>, Error> {
             defer { broadcaster.finish() }
-            return try await execute(request, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            return try await execute(request, broadcaster: broadcaster, cancellationToken: cancellationToken, client: client)
         }
         
         let session = CallSession(valueTask: valueTask, broadcaster: broadcaster)
@@ -171,8 +183,7 @@ public struct Iris {
     /// - Returns: The decoded model of type `Model`.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
     public static func fetch<Model: Decodable>(_ request: Call<Model>) async throws -> Model {
-        let response = try await send(request)
-        return response.model
+        try await request.resolvedClient.fetch(request)
     }
     
     // MARK: - Private Methods
@@ -183,12 +194,12 @@ public struct Iris {
     private static func execute<Model: Decodable>(
         _ request: Call<Model>,
         broadcaster: EventBroadcaster,
-        cancellationToken: AlamofireRequestCancellationToken
+        cancellationToken: AlamofireRequestCancellationToken,
+        client: IrisClient
     ) async throws -> Response<Model> {
-        // Snapshot the global configuration once so a concurrent
-        // `Iris.configure(...)` cannot hand this request a mix of old and
-        // new values mid-flight.
-        let configuration = Iris.configuration
+        // Snapshot the client configuration once so a concurrent configure
+        // cannot hand this request a mix of old and new values mid-flight.
+        let configuration = client.configuration
         let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
         if let stubBehavior {
             return try await performStub(request, behavior: stubBehavior, broadcaster: broadcaster, configuration: configuration)
@@ -627,7 +638,7 @@ public struct Iris {
         configuration: IrisConfiguration
     ) throws -> URLRequest {
         let endpoint = try createEndpoint(from: request, configuration: configuration)
-        var urlRequest = try endpoint.urlRequest()
+        var urlRequest = try endpoint.urlRequest(encoder: configuration.jsonEncoder)
         urlRequest.timeoutInterval = request.timeout(over: configuration)
 
         var headers = configuration.defaultHeaders

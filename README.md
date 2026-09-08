@@ -19,7 +19,7 @@ Iris is a networking library built on top of [Alamofire](https://github.com/Alam
 - **Callbacks**: Thin `send` / `fetch` completion wrappers for existing callback call sites
 - **Progress**: Upload and download `Progress` as recipe handlers or `send { session in }` streams
 - **HTTP Streaming**: `stream()` with `onChunk` or `session.chunks`
-- **Configurable**: Global, service-scoped, and per-request configuration options
+- **Configurable**: Shared or custom clients, service-scoped defaults, and per-request overrides
 - **Plugin System**: Intercept and modify requests/responses
 - **Stubbing**: First-class support for testing with stubbed responses
 - **Full-Featured**: Supports uploads, downloads, multipart form data, and more
@@ -194,17 +194,54 @@ let media = try await Call<Media>()
 
 ## Request Configuration
 
-Defaults can be set at three levels. A later level wins on the same key:
+Calls run on an `IrisClient`. By default, every call uses `IrisClient.shared`,
+so existing `Iris.configure(...)` and `Call().send()` code keeps working. Use a
+custom client when a group of requests needs its own Alamofire session, pinning,
+plugins, coders, or stub defaults.
 
-```text
-per-request  >  IrisService (business module)  >  Iris.configure (global)  >  built-in default
+```swift
+// Global default, compatible with existing code.
+Call<User>().path("/me").send()
+
+// A small number of special requests can pick a client directly.
+Call<User>().client(secureClient).path("/me").send()
+
+// Recommended for a business module: bind the client to a service factory.
+userService.call(User.self).path("/me").send()
 ```
 
-Headers are merged in that order (request keys overwrite service keys, which overwrite global keys). Timeout and base URL are replaced, not merged.
+Within a client, defaults can be set at three levels. A later level wins on the same key:
+
+```text
+per-request  >  IrisService (business module)  >  IrisClient / Iris.configure  >  built-in default
+```
+
+Headers are merged in that order (request keys overwrite service keys, which overwrite client/global keys). Timeout and base URL are replaced, not merged.
+
+### Clients
+
+`IrisClient` is the execution context. It owns an `IrisConfiguration`, including
+the Alamofire `Session`, plugins, coders, and stub behavior.
+
+```swift
+let secureClient = IrisClient(
+    configuration: IrisConfiguration()
+        .baseURL("https://secure.example.com")
+        .header("Accept", "application/json")
+        .plugin(AuthPlugin())
+        .session(pinnedSession)
+)
+
+let user = try await Call<User>()
+    .client(secureClient)
+    .path("/me")
+    .fetch()
+```
 
 ### Global defaults
 
-Call `Iris.configure` once at app launch. Every `Call` that does not set its own value uses this:
+Call `Iris.configure` once at app launch. It configures `IrisClient.shared`.
+Every `Call` that does not set its own client or value uses this:
 
 ```swift
 Iris.configure(
@@ -232,11 +269,18 @@ try await Call<User>()
 
 ### Service-scoped defaults (business modules)
 
-Use `IrisService` when a domain has its own host, headers, or timeout — payment, IM, a BFF — sitting between global config and a single request.
+Use `IrisService` when a domain has its own host, headers, or timeout — payment, IM, a BFF — sitting between client/global config and a single request. Attach a client when that domain should use an isolated networking stack.
 
 ```swift
 enum PaymentAPI {
+    static let client = IrisClient(
+        configuration: IrisConfiguration()
+            .plugin(PaymentAuthPlugin())
+            .session(paymentPinnedSession)
+    )
+
     static let service = IrisService(
+        client: client,
         baseURL: "https://pay.example.com",
         headers: ["X-Business": "payment"],
         timeout: 15
@@ -268,11 +312,11 @@ let user = try await Call<User>()
     .path("/users/me")
     .fetch()
 
-// Payment host + X-Business; timeout 15s.
+// Payment client + payment host + X-Business; timeout 15s.
 let order = try await PaymentAPI.order(id: "123").fetch()
 ```
 
-`service.call(Model.self)` copies the service onto the `Call`. Other chain methods (`.path`, `.body`, `.validateSuccessCodes()`, …) are unchanged.
+`service.call(Model.self)` copies the service and its client onto the `Call`. Other chain methods (`.path`, `.body`, `.validateSuccessCodes()`, …) are unchanged.
 
 ### Per-request overrides
 

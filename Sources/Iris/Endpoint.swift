@@ -143,7 +143,7 @@ public extension Endpoint {
     /// - Returns: A `URLRequest` ready to be executed.
     /// - Throws: `IrisError.requestMapping` if the URL is invalid,
     ///           or other errors if encoding fails.
-    func urlRequest() throws -> URLRequest {
+    func urlRequest(encoder: JSONEncoder = Iris.configuration.jsonEncoder) throws -> URLRequest {
         guard let requestURL = Foundation.URL(string: url) else {
             throw IrisError.requestMapping(url)
         }
@@ -159,7 +159,7 @@ public extension Endpoint {
             request.httpBody = data
             return request
         case let .requestJSONEncodable(encodable):
-            return try request.encoded(encodable: encodable)
+            return try request.encoded(encodable: encodable, encoder: encoder)
         case let .requestCustomJSONEncodable(encodable, encoder: encoder):
             return try request.encoded(encodable: encodable, encoder: encoder)
         case let .requestParameters(parameters, parameterEncoding):

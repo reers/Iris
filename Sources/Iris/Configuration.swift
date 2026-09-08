@@ -7,7 +7,6 @@
 
 import Foundation
 import Alamofire
-import os.lock
 
 /// Global configuration for Iris networking.
 ///
@@ -110,18 +109,6 @@ public struct IrisConfiguration {
 
 // MARK: - Global Configuration
 
-/// Backing storage for `Iris.configuration`. Access is serialized through
-/// `configurationLock`; a request snapshots the value when it starts, so a
-/// concurrent write never reaches a request already in flight.
-private var configurationStorage = IrisConfiguration()
-
-/// Serializes reads and writes of `configurationStorage`.
-private let configurationLock: os_unfair_lock_t = {
-    let lock = os_unfair_lock_t.allocate(capacity: 1)
-    lock.initialize(to: os_unfair_lock_s())
-    return lock
-}()
-
 public extension Iris {
     
     /// The global configuration instance.
@@ -133,14 +120,10 @@ public extension Iris {
     /// request is in flight does not affect that request.
     static var configuration: IrisConfiguration {
         get {
-            os_unfair_lock_lock(configurationLock)
-            defer { os_unfair_lock_unlock(configurationLock) }
-            return configurationStorage
+            IrisClient.shared.configuration
         }
         set {
-            os_unfair_lock_lock(configurationLock)
-            configurationStorage = newValue
-            os_unfair_lock_unlock(configurationLock)
+            IrisClient.shared.configuration = newValue
         }
     }
     

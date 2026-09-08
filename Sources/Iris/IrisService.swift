@@ -10,10 +10,13 @@ import Foundation
 /// A service-scoped request factory.
 ///
 /// Use `IrisService` when a group of endpoints share defaults such as a
-/// `baseURL`, headers, or timeout that should sit between global configuration
-/// and per-request overrides.
+/// `baseURL`, headers, or timeout. Attach a client when that group should use
+/// an isolated networking configuration.
 public struct IrisService {
-    
+
+    /// The client used by calls created from this service.
+    public var client: IrisClient?
+
     /// The base URL used by calls created from this service.
     public var baseURL: URL?
     
@@ -26,14 +29,17 @@ public struct IrisService {
     /// Creates a service with optional scoped defaults.
     ///
     /// - Parameters:
+    ///   - client: The client used to execute calls from this service.
     ///   - baseURL: The service base URL.
     ///   - headers: Headers applied after global headers and before request headers.
     ///   - timeout: Timeout applied after global timeout and before request timeout.
     public init(
+        client: IrisClient? = nil,
         baseURL: URL? = nil,
         headers: [String: String] = [:],
         timeout: TimeInterval? = nil
     ) {
+        self.client = client
         self.baseURL = baseURL
         self.headers = headers
         self.timeout = timeout
@@ -42,15 +48,17 @@ public struct IrisService {
     /// Creates a service with a base URL string.
     ///
     /// - Parameters:
+    ///   - client: The client used to execute calls from this service.
     ///   - baseURL: The service base URL string.
     ///   - headers: Headers applied after global headers and before request headers.
     ///   - timeout: Timeout applied after global timeout and before request timeout.
     public init(
+        client: IrisClient? = nil,
         baseURL: String,
         headers: [String: String] = [:],
         timeout: TimeInterval? = nil
     ) {
-        self.init(baseURL: URL(string: baseURL), headers: headers, timeout: timeout)
+        self.init(client: client, baseURL: URL(string: baseURL), headers: headers, timeout: timeout)
     }
     
     /// Creates a `Call` scoped to this service.
@@ -60,6 +68,7 @@ public struct IrisService {
     public func call<Model: Decodable>(_ type: Model.Type = Model.self) -> Call<Model> {
         var request = Call<Model>()
         request.service = self
+        request.client = client
         return request
     }
 }
