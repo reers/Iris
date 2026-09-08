@@ -22,6 +22,12 @@ import Foundation
 /// ```
 public struct RetryPolicy: Sendable, Equatable {
 
+    /// Upper bound for retry delay, in seconds.
+    ///
+    /// Keeps extreme or non-finite backoff parameters from parking a request
+    /// forever inside Alamofire's delayed retry scheduling.
+    public static let maximumDelay: TimeInterval = 60
+
     /// How the wait grows between retries.
     public enum Backoff: Sendable, Equatable {
         /// Wait `interval` before every retry.
@@ -119,14 +125,23 @@ public struct RetryPolicy: Sendable, Equatable {
     /// Delay before the given retry. `attempt` is 1-based (`1` is the first retry).
     public func delay(beforeRetry attempt: Int) -> TimeInterval {
         let safeAttempt = max(attempt, 1)
+        let delay: TimeInterval
         switch backoff {
         case .none:
-            return interval
+            delay = interval
         case .linear:
-            return interval * Double(safeAttempt)
+            delay = interval * Double(safeAttempt)
         case .exponential(let base, let scale):
-            return interval * scale * pow(base, Double(safeAttempt - 1))
+            delay = interval * scale * pow(base, Double(safeAttempt - 1))
         }
+
+        if delay == .infinity {
+            return Self.maximumDelay
+        }
+        guard delay.isFinite, delay > 0 else {
+            return 0
+        }
+        return min(delay, Self.maximumDelay)
     }
 
     /// Whether this failure is eligible for another attempt.

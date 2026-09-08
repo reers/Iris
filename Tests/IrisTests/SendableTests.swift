@@ -23,6 +23,8 @@ final class SendableTests: XCTestCase {
         assertSendable(RetryPolicy.Backoff.exponential)
         assertSendable(ValidationType.successCodes)
         assertSendable(HTTPResponse(statusCode: 200, data: Data()))
+        assertSendable(Call<Empty>().streamBytes())
+        assertSendable(Call<Empty>().streamStrings())
         assertSendable(Response(model: Empty(), httpResponse: HTTPResponse(statusCode: 200, data: Data())))
         assertSendable(Empty())
         assertSendable(CallTask.requestPlain)
@@ -34,6 +36,14 @@ final class SendableTests: XCTestCase {
                 duration: 0
             )
         )
+    }
+
+    func testCallCanBeBuiltForLegacyNonSendableModel() {
+        let request = Call<LegacyReferenceModel>()
+            .baseURL("https://example.com")
+            .path("/legacy")
+
+        XCTAssertEqual(request.path, "/legacy")
     }
 
     func testCallCanCrossIsolationDomain() async throws {
@@ -57,4 +67,8 @@ final class SendableTests: XCTestCase {
     private func assertSendable<T: Sendable>(_ value: T) {
         _ = value
     }
+}
+
+private final class LegacyReferenceModel: Decodable {
+    let id: Int
 }

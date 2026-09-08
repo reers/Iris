@@ -25,17 +25,11 @@ let package = Package(
     targets: [
         .target(
             name: "Iris",
-            dependencies: ["Alamofire"],
-            swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency")
-            ]
+            dependencies: ["Alamofire"]
         ),
         .testTarget(
             name: "IrisTests",
-            dependencies: ["Iris"],
-            swiftSettings: [
-                .enableExperimentalFeature("StrictConcurrency")
-            ]
+            dependencies: ["Iris"]
         ),
     ]
 )

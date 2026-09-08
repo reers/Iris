@@ -36,6 +36,15 @@ final class StubTests: XCTestCase {
         XCTAssertEqual(response.model.login, "testuser")
         XCTAssertEqual(response.model.id, 123)
     }
+
+    func testNegativeStubDelayDoesNotTrap() async throws {
+        let response = try await Call<Empty>()
+            .path("/negative-delay")
+            .stub(behavior: .delayed(-1))
+            .send()
+
+        XCTAssertEqual(response.statusCode, 200)
+    }
     
     func testStubCanReturnCustomStatusCode() async throws {
         let sampleData = "{\"login\": \"created\", \"id\": 201}".data(using: .utf8)!

@@ -445,7 +445,7 @@ Sidecar streams are **live-only**: values emitted before a stream is created are
 
 #### Handler (GCD)
 
-For call sites that cannot be `async` (UIKit actions, existing completion-style managers). Closures default to the main queue.
+For call sites that cannot be `async` (UIKit actions, existing completion-style managers). Progress closures default to the main queue. Chunk closures default to Iris's background stream queue; pass `.main` explicitly when updating UI from `onChunk`.
 
 ```swift
 Call<Media>()
@@ -472,7 +472,10 @@ Call.data()
     .body(["prompt": "hi"])
     .stream()
     .onChunk { data in
-        print(String(data: data, encoding: .utf8) ?? "")
+        let text = String(data: data, encoding: .utf8) ?? ""
+        DispatchQueue.main.async {
+            print(text)
+        }
     }
     .send { result in
         _ = try? result.get().model   // concatenated body as Data
@@ -487,7 +490,7 @@ Progress uses Foundation `Progress`. When `Content-Length` is missing, `fraction
 
 Use `streamBytes()` / `streamStrings()` when you want Alamofire-style streaming
 without accumulating the full body or returning a final `Response`. These methods
-are terminal APIs: they return an `AsyncThrowingStream` directly.
+are terminal APIs: they return an `IrisStream` async sequence directly.
 
 Creating the sequence does not start the request. The request starts when the
 sequence is first iterated, matching Iris’s normal “build first, execute later”
@@ -516,9 +519,12 @@ for try await text in Call<Empty>()
 ```
 
 Terminal streams still apply request preparation, `willSend`, validation, and
-transport errors. Cancelling the consuming task cancels the underlying request.
-They do not parse lines or Server-Sent Events; use a protocol-specific parser on
-top if you need SSE events.
+transport errors. Cancelling the consuming task, breaking out of iteration, or
+dropping the iterator cancels the underlying request. Iris keeps a bounded
+internal buffer while bridging Alamofire callbacks to async iteration; if a
+consumer falls too far behind, the stream fails instead of growing memory
+without bound. Terminal streams do not parse lines or Server-Sent Events; use a
+protocol-specific parser on top if you need SSE events.
 
 #### AsyncStream (Swift concurrency)
 
@@ -775,6 +781,11 @@ let request = Call.empty()
 - iOS 13.0+ / macOS 10.15+ / tvOS 13.0+ / watchOS 6.0+ / visionOS 1.0+
 
 `AsyncStream` (`for await session.uploadProgress` / `session.chunks`) is a Swift 5.5 standard-library type. Apple’s availability is iOS 13 / macOS 10.15 / tvOS 13 / watchOS 6 / visionOS 1, so it does not raise Iris’s minimum OS. Handler APIs (`onUploadProgress`, `onChunk`) have no extra concurrency requirement.
+
+Iris avoids forcing every decoded model in an app to conform to `Sendable`.
+`Call<Model>` only requires `Model: Decodable`; Iris keeps the compatibility
+boundary inside its own request execution. Public Iris request types still
+declare Sendable where they can safely cross concurrency domains.
 
 ## Dependencies
 

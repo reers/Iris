@@ -65,7 +65,7 @@ public struct IrisService: Sendable {
     ///
     /// - Parameter type: The expected decoded response type.
     /// - Returns: A call using this service's defaults.
-    public func call<Model: Decodable & Sendable>(_ type: Model.Type = Model.self) -> Call<Model> {
+    public func call<Model: Decodable>(_ type: Model.Type = Model.self) -> Call<Model> {
         var request = Call<Model>()
         request.service = self
         request.client = client
