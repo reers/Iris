@@ -31,7 +31,7 @@ import Foundation
 ///     }
 /// }
 /// ```
-public enum IrisError: Swift.Error {
+public enum IrisError: Swift.Error, Sendable {
 
     /// Indicates a response failed to map to an image.
     ///

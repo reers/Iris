@@ -28,7 +28,7 @@ import Foundation
 /// Call<User>()
 ///     .validate(.customCodes([200, 201, 204]))
 /// ```
-public enum ValidationType {
+public enum ValidationType: Sendable {
 
     /// No validation. All status codes are accepted.
     case none

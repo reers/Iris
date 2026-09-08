@@ -17,7 +17,8 @@ import os.lock
 ///
 /// Do not store this value. It exists so the live request does not leak out of
 /// the `send` closure as a second execution type.
-public struct CallSession<ResponseType: Decodable> {
+///
+public struct CallSession<ResponseType: Decodable & Sendable>: Sendable {
     
     private let valueTask: Task<Response<ResponseType>, Error>
     private let broadcaster: EventBroadcaster
@@ -36,11 +37,21 @@ public struct CallSession<ResponseType: Decodable> {
     }
     
     /// Upload progress. Finishes when the request completes, fails, or is cancelled.
+    ///
+    /// Live-only: values emitted before the stream is created are not replayed.
+    /// Access the stream at the start of the `send` body to observe the full
+    /// sequence. Each delivered `Progress` is an immutable snapshot taken when
+    /// the value was emitted.
     public var uploadProgress: AsyncStream<Progress> {
         broadcaster.uploadProgress
     }
     
     /// Download progress. Finishes when the request completes, fails, or is cancelled.
+    ///
+    /// Live-only: values emitted before the stream is created are not replayed.
+    /// Access the stream at the start of the `send` body to observe the full
+    /// sequence. Each delivered `Progress` is an immutable snapshot taken when
+    /// the value was emitted.
     public var downloadProgress: AsyncStream<Progress> {
         broadcaster.downloadProgress
     }
@@ -48,6 +59,10 @@ public struct CallSession<ResponseType: Decodable> {
     /// Body fragments for `stream()` data tasks. Empty and immediately finished
     /// when the request is not a stream. The concatenated body is still decoded
     /// as `value`.
+    ///
+    /// Live-only: chunks emitted before the stream is created are not replayed.
+    /// Access the stream at the start of the `send` body to observe every chunk,
+    /// or await `value` for the full body.
     public var chunks: AsyncStream<Data> {
         broadcaster.chunks
     }
@@ -58,31 +73,34 @@ public struct CallSession<ResponseType: Decodable> {
 ///
 /// Alamofire keeps a single `uploadProgress` closure. This type is the Iris-side
 /// broadcast so `onUploadProgress` and `for await session.uploadProgress` can
-/// coexist. `@unchecked Sendable` is valid because every mutable field is
-/// accessed only while `lock` is held, and continuations are yielded or finished
-/// outside the lock.
+/// coexist.
+///
+/// Streams are live-only: values emitted before a stream is created are not
+/// replayed. `Progress` values are snapshotted when yielded because Alamofire
+/// mutates a single shared instance over the request's lifetime; delivering the
+/// reference would hand out values that silently change after the fact.
+/// `@unchecked Sendable` is valid because every mutable field is accessed only
+/// while `lock` is held, and continuations are yielded or finished outside the
+/// lock.
 final class EventBroadcaster: @unchecked Sendable {
     
     private let lock: os_unfair_lock_t
     private var didFinish = false
-    
-    private var uploadBuffer: [Progress] = []
-    private var downloadBuffer: [Progress] = []
-    private var chunkBuffer: [Data] = []
+    private var didYieldChunk = false
     
     private var uploadSubscribers: [AsyncStream<Progress>.Continuation] = []
     private var downloadSubscribers: [AsyncStream<Progress>.Continuation] = []
     private var chunkSubscribers: [AsyncStream<Data>.Continuation] = []
     
-    private let uploadHandler: ((Progress) -> Void)?
+    private let uploadHandler: (@Sendable (Progress) -> Void)?
     private let uploadQueue: DispatchQueue
-    private let downloadHandler: ((Progress) -> Void)?
+    private let downloadHandler: (@Sendable (Progress) -> Void)?
     private let downloadQueue: DispatchQueue
-    private let chunkHandler: ((Data) -> Void)?
+    private let chunkHandler: (@Sendable (Data) -> Void)?
     private let chunkQueue: DispatchQueue
     private let isStream: Bool
     
-    init<Model: Decodable>(from request: Call<Model>) {
+    init<Model: Decodable & Sendable>(from request: Call<Model>) {
         lock = .allocate(capacity: 1)
         lock.initialize(to: os_unfair_lock_s())
         uploadHandler = request.uploadProgressHandler
@@ -102,9 +120,6 @@ final class EventBroadcaster: @unchecked Sendable {
     var uploadProgress: AsyncStream<Progress> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
             os_unfair_lock_lock(self.lock)
-            for item in self.uploadBuffer {
-                continuation.yield(item)
-            }
             if self.didFinish {
                 os_unfair_lock_unlock(self.lock)
                 continuation.finish()
@@ -118,9 +133,6 @@ final class EventBroadcaster: @unchecked Sendable {
     var downloadProgress: AsyncStream<Progress> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
             os_unfair_lock_lock(self.lock)
-            for item in self.downloadBuffer {
-                continuation.yield(item)
-            }
             if self.didFinish {
                 os_unfair_lock_unlock(self.lock)
                 continuation.finish()
@@ -131,12 +143,18 @@ final class EventBroadcaster: @unchecked Sendable {
         }
     }
     
+    /// Whether `yieldChunk` has delivered at least one body fragment.
+    ///
+    /// Used to refuse stream retries after the caller has already seen data.
+    var hasYieldedChunks: Bool {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+        return didYieldChunk
+    }
+
     var chunks: AsyncStream<Data> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
             os_unfair_lock_lock(self.lock)
-            for item in self.chunkBuffer {
-                continuation.yield(item)
-            }
             if self.didFinish {
                 os_unfair_lock_unlock(self.lock)
                 continuation.finish()
@@ -150,43 +168,28 @@ final class EventBroadcaster: @unchecked Sendable {
     /// - Parameter handlerOnQueue: True when Alamofire already invoked this on
     ///   the handler's queue, so the recipe closure can run inline.
     func yieldUpload(_ progress: Progress, handlerOnQueue: Bool) {
+        let snapshot = Self.snapshot(progress)
         os_unfair_lock_lock(lock)
-        let subscribers: [AsyncStream<Progress>.Continuation]?
-        if didFinish {
-            subscribers = nil
-        } else {
-            uploadBuffer.append(progress)
-            subscribers = uploadSubscribers
-        }
+        let subscribers = didFinish ? nil : uploadSubscribers
         os_unfair_lock_unlock(lock)
-        notify(uploadHandler, queue: uploadQueue, handlerOnQueue: handlerOnQueue, value: progress)
-        subscribers?.forEach { $0.yield(progress) }
+        notify(uploadHandler, queue: uploadQueue, handlerOnQueue: handlerOnQueue, value: snapshot)
+        subscribers?.forEach { $0.yield(snapshot) }
     }
     
     func yieldDownload(_ progress: Progress, handlerOnQueue: Bool) {
+        let snapshot = Self.snapshot(progress)
         os_unfair_lock_lock(lock)
-        let subscribers: [AsyncStream<Progress>.Continuation]?
-        if didFinish {
-            subscribers = nil
-        } else {
-            downloadBuffer.append(progress)
-            subscribers = downloadSubscribers
-        }
+        let subscribers = didFinish ? nil : downloadSubscribers
         os_unfair_lock_unlock(lock)
-        notify(downloadHandler, queue: downloadQueue, handlerOnQueue: handlerOnQueue, value: progress)
-        subscribers?.forEach { $0.yield(progress) }
+        notify(downloadHandler, queue: downloadQueue, handlerOnQueue: handlerOnQueue, value: snapshot)
+        subscribers?.forEach { $0.yield(snapshot) }
     }
     
     func yieldChunk(_ data: Data, handlerOnQueue: Bool) {
         guard isStream else { return }
         os_unfair_lock_lock(lock)
-        let subscribers: [AsyncStream<Data>.Continuation]?
-        if didFinish {
-            subscribers = nil
-        } else {
-            chunkBuffer.append(data)
-            subscribers = chunkSubscribers
-        }
+        didYieldChunk = true
+        let subscribers = didFinish ? nil : chunkSubscribers
         os_unfair_lock_unlock(lock)
         notify(chunkHandler, queue: chunkQueue, handlerOnQueue: handlerOnQueue, value: data)
         subscribers?.forEach { $0.yield(data) }
@@ -219,8 +222,16 @@ final class EventBroadcaster: @unchecked Sendable {
         chunks.forEach { $0.finish() }
     }
     
-    private func notify<Element>(
-        _ handler: ((Element) -> Void)?,
+    /// Snapshots a `Progress` so later mutations of Alamofire's shared instance
+    /// cannot leak into values already handed to handlers and subscribers.
+    private static func snapshot(_ progress: Progress) -> Progress {
+        let copy = Progress(totalUnitCount: progress.totalUnitCount)
+        copy.completedUnitCount = progress.completedUnitCount
+        return copy
+    }
+    
+    private func notify<Element: Sendable>(
+        _ handler: (@Sendable (Element) -> Void)?,
         queue: DispatchQueue,
         handlerOnQueue: Bool,
         value: Element
@@ -229,18 +240,12 @@ final class EventBroadcaster: @unchecked Sendable {
         if handlerOnQueue {
             handler(value)
         } else {
-            invokeSynchronously(queue) { handler(value) }
+            invokeAsynchronously(queue) { handler(value) }
         }
     }
 }
 
-/// Runs `work` on `queue` and waits for it.
-///
-/// `DispatchQueue.main.sync` from the main thread deadlocks, so that case runs inline.
-func invokeSynchronously(_ queue: DispatchQueue, _ work: () -> Void) {
-    if Thread.isMainThread && queue === DispatchQueue.main {
-        work()
-    } else {
-        queue.sync(execute: work)
-    }
+/// Schedules `work` on `queue` without blocking the caller.
+func invokeAsynchronously(_ queue: DispatchQueue, _ work: @escaping @Sendable () -> Void) {
+    queue.async(execute: work)
 }

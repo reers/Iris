@@ -22,13 +22,13 @@ final class PluginTests: XCTestCase {
     
     // MARK: - Default Implementation Tests
     
-    func testEmptyPluginUsesDefaultImplementations() {
+    func testEmptyPluginUsesDefaultImplementations() async throws {
         let plugin = EmptyPlugin()
         let request = URLRequest(url: URL(string: "https://example.com")!)
         let target = Call<Empty>().path("/test")
         
         // prepare should return the same request
-        let preparedRequest = plugin.prepare(request, target: target)
+        let preparedRequest = try await plugin.prepare(request, target: target)
         XCTAssertEqual(preparedRequest.url, request.url)
         
         // willSend should not crash
@@ -140,6 +140,138 @@ final class PluginTests: XCTestCase {
         XCTAssertEqual(plugin.processCalledCount, 0)
     }
     
+    func testWillSendCallTypeProvidesCurlDescription() async throws {
+        let curlDescription = SendableBox("")
+        let plugin = CurlCapturingPlugin(curlDescription: curlDescription)
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://example.com")
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+
+        _ = try await Call<Empty>()
+            .path("/curl")
+            .method(.post)
+            .header("X-Debug", "yes")
+            .send()
+
+        XCTAssertTrue(curlDescription.value.hasPrefix("$ curl"))
+        XCTAssertTrue(curlDescription.value.contains("https://example.com/curl"))
+        XCTAssertTrue(curlDescription.value.contains("-X POST"))
+        XCTAssertTrue(curlDescription.value.contains("X-Debug: yes"))
+    }
+
+    func testWillSendAuthenticateSupportsMoyaStyleCredentialPlugin() async throws {
+        let authenticatedRequestURL = SendableBox<URL?>(nil)
+        let plugin = BasicAuthenticationPlugin(
+            username: "user",
+            password: "passwd",
+            authenticatedRequestURL: authenticatedRequestURL
+        )
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://example.com")
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+
+        _ = try await Call<Empty>()
+            .path("/auth")
+            .send()
+
+        XCTAssertEqual(authenticatedRequestURL.value?.absoluteString, "https://example.com/auth")
+    }
+
+    func testAsyncPrepareCanAwaitBeforeModifyingLiveRequest() async throws {
+        let capturedToken = SendableBox<String?>(nil)
+        let plugin = AsyncTokenPlugin(store: AsyncTokenStore(token: "fresh-token"))
+        StubURLProtocol.handler = { request in
+            capturedToken.value = request.value(forHTTPHeaderField: "Authorization")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://example.com")
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+
+        _ = try await Call<Empty>()
+            .path("/async-auth")
+            .send()
+
+        XCTAssertEqual(capturedToken.value, "Bearer fresh-token")
+    }
+
+    func testPrepareFailureFailsRequestBeforeNetworkStarts() async {
+        let didStart = SendableBox(false)
+        StubURLProtocol.onStartLoading = {
+            didStart.value = true
+        }
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://example.com")
+                .session(makeStubbedSession())
+                .plugin(ThrowingPreparePlugin())
+        )
+
+        do {
+            _ = try await Call<Empty>()
+                .path("/prepare-error")
+                .send()
+            XCTFail("Expected prepare failure")
+        } catch let IrisError.underlying(error, response) {
+            XCTAssertNil(response)
+            XCTAssertTrue(String(describing: error).contains("PrepareFailure"))
+        } catch {
+            XCTFail("Expected underlying prepare failure, got \(error)")
+        }
+
+        XCTAssertFalse(didStart.value)
+    }
+
     // MARK: - OrderTrackingPlugin Tests
     
     func testOrderTrackingPlugin() {
@@ -222,31 +354,31 @@ final class PluginTests: XCTestCase {
     // MARK: - NetworkActivityPlugin Tests
     
     func testNetworkActivityPluginBegan() {
-        var beganCalled = false
-        var receivedTarget: TargetType?
+        let beganCalled = SendableBox(false)
+        let receivedTarget = SendableBox<(any TargetType)?>(nil)
         
         let plugin = NetworkActivityPlugin { change, target in
             if change == .began {
-                beganCalled = true
-                receivedTarget = target
+                beganCalled.value = true
+                receivedTarget.value = target
             }
         }
         
         let target = Call<Empty>().path("/test")
         plugin.willSend(MockCallType(), target: target)
         
-        XCTAssertTrue(beganCalled)
-        XCTAssertNotNil(receivedTarget)
+        XCTAssertTrue(beganCalled.value)
+        XCTAssertNotNil(receivedTarget.value)
     }
     
     func testNetworkActivityPluginEnded() {
-        var endedCalled = false
-        var receivedTarget: TargetType?
+        let endedCalled = SendableBox(false)
+        let receivedTarget = SendableBox<(any TargetType)?>(nil)
         
         let plugin = NetworkActivityPlugin { change, target in
             if change == .ended {
-                endedCalled = true
-                receivedTarget = target
+                endedCalled.value = true
+                receivedTarget.value = target
             }
         }
         
@@ -254,8 +386,8 @@ final class PluginTests: XCTestCase {
         let response = HTTPResponse(statusCode: 200, data: Data())
         plugin.didReceive(.success(response), target: target)
         
-        XCTAssertTrue(endedCalled)
-        XCTAssertNotNil(receivedTarget)
+        XCTAssertTrue(endedCalled.value)
+        XCTAssertNotNil(receivedTarget.value)
     }
     
     // MARK: - Multiple Plugins Tests
@@ -393,6 +525,28 @@ final class PluginTests: XCTestCase {
             XCTAssertEqual(response.statusCode, 404)
         }
     }
+
+    func testTransportFailureAfterResponseHeadersIsUnderlyingError() async {
+        let response = HTTPURLResponse(
+            url: URL(string: "https://example.com/interrupted")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+
+        let result = Iris.mapNetworkResult(
+            data: Data("partial".utf8),
+            request: nil,
+            response: response,
+            error: URLError(.networkConnectionLost)
+        )
+
+        if case .failure(.underlying(_, let response)) = result {
+            XCTAssertEqual(response?.statusCode, 200)
+        } else {
+            XCTFail("Expected underlying failure, got \(result)")
+        }
+    }
 }
 
 // MARK: - Mock CallType
@@ -414,8 +568,60 @@ private struct MockCallType: CallType {
         return self
     }
     
-    func cURLDescription(calling handler: @escaping (String) -> Void) -> MockCallType {
+    func cURLDescription(calling handler: @escaping @Sendable (String) -> Void) -> MockCallType {
         handler(request?.description ?? "")
         return self
+    }
+}
+
+private struct CurlCapturingPlugin: PluginType {
+    let curlDescription: SendableBox<String>
+
+    func willSend(_ request: CallType, target: TargetType) {
+        _ = request.cURLDescription { curlDescription.value = $0 }
+    }
+}
+
+private struct BasicAuthenticationPlugin: PluginType {
+    let username: String
+    let password: String
+    let authenticatedRequestURL: SendableBox<URL?>
+
+    func willSend(_ request: CallType, target: TargetType) {
+        let authenticatedRequest = request.authenticate(username: username, password: password, persistence: .none)
+        authenticatedRequestURL.value = authenticatedRequest.request?.url
+    }
+}
+
+private actor AsyncTokenStore {
+    private let token: String
+
+    init(token: String) {
+        self.token = token
+    }
+
+    func currentToken() -> String {
+        token
+    }
+}
+
+private struct AsyncTokenPlugin: PluginType {
+    let store: AsyncTokenStore
+
+    func prepare(_ request: URLRequest, target: TargetType) async throws -> URLRequest {
+        var request = request
+        let token = await store.currentToken()
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+}
+
+private enum PrepareFailure: Error {
+    case failed
+}
+
+private struct ThrowingPreparePlugin: PluginType {
+    func prepare(_ request: URLRequest, target: TargetType) async throws -> URLRequest {
+        throw PrepareFailure.failed
     }
 }

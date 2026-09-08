@@ -59,7 +59,7 @@ final class LiveRequestTests: XCTestCase {
         let payload = Data(repeating: 0x62, count: 8)
         stubBody(payload, chunkSize: 2, chunkInterval: 0.01)
         
-        var fractions: [Double] = []
+        let fractions = SendableArray<Double>()
         let response = try await Call.data()
             .path("/v1/media")
             .send { session in
@@ -69,15 +69,15 @@ final class LiveRequestTests: XCTestCase {
             }
         
         XCTAssertEqual(response.model, payload)
-        XCTAssertFalse(fractions.isEmpty)
-        XCTAssertEqual(fractions.last, 1)
+        XCTAssertFalse(fractions.values.isEmpty)
+        XCTAssertEqual(fractions.values.last, 1)
     }
     
     func testStreamDeliversMultipleChunksThenDecodedValue() async throws {
         let payload = #"{"login":"octocat","id":1}"#.data(using: .utf8)!
         stubBody(payload, chunkSize: 8, chunkInterval: 0.01)
         
-        var chunks: [Data] = []
+        let chunks = SendableArray<Data>()
         let response = try await Call<GitHubUser>()
             .path("/users/octocat")
             .stream()
@@ -88,7 +88,7 @@ final class LiveRequestTests: XCTestCase {
             }
         
         XCTAssertGreaterThan(chunks.count, 1)
-        XCTAssertEqual(chunks.reduce(into: Data()) { $0.append($1) }, payload)
+        XCTAssertEqual(chunks.values.reduce(into: Data()) { $0.append($1) }, payload)
         XCTAssertEqual(response.model.login, "octocat")
         XCTAssertEqual(response.model.id, 1)
     }
@@ -98,7 +98,7 @@ final class LiveRequestTests: XCTestCase {
         stubBody(payload, chunkSize: 4, chunkInterval: 0.01)
         
         let handlerChunks = SendableArray<Data>()
-        var sessionChunks: [Data] = []
+        let sessionChunks = SendableArray<Data>()
         
         let response = try await Call.data()
             .path("/v1/ai")
@@ -112,10 +112,144 @@ final class LiveRequestTests: XCTestCase {
                 }
             }
         
-        XCTAssertEqual(handlerChunks.values, sessionChunks)
+        XCTAssertEqual(handlerChunks.values, sessionChunks.values)
         XCTAssertGreaterThan(sessionChunks.count, 1)
-        XCTAssertEqual(sessionChunks.reduce(into: Data()) { $0.append($1) }, payload)
+        XCTAssertEqual(sessionChunks.values.reduce(into: Data()) { $0.append($1) }, payload)
         XCTAssertEqual(response.model, payload)
+    }
+
+    func testStreamBytesYieldsDataChunks() async throws {
+        let payload = Data("hello-stream".utf8)
+        stubBody(payload, chunkSize: 3, chunkInterval: 0.01)
+        
+        var chunks: [Data] = []
+        for try await chunk in Call<Empty>()
+            .path("/v1/stream-bytes")
+            .streamBytes() {
+            chunks.append(chunk)
+        }
+        
+        XCTAssertGreaterThan(chunks.count, 1)
+        XCTAssertEqual(chunks.reduce(into: Data()) { $0.append($1) }, payload)
+    }
+
+    func testStreamBytesDoesNotStartUntilIterated() async throws {
+        let didStart = SendableBox(false)
+        StubURLProtocol.onStartLoading = {
+            didStart.value = true
+        }
+        stubBody(Data("lazy".utf8), chunkSize: 2, chunkInterval: 0.01)
+
+        let stream = Call<Empty>()
+            .path("/v1/lazy-stream-bytes")
+            .streamBytes()
+
+        try await _Concurrency.Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(didStart.value)
+
+        var iterator = stream.makeAsyncIterator()
+        let first = try await iterator.next()
+
+        XCTAssertNotNil(first)
+        XCTAssertTrue(didStart.value)
+    }
+
+    func testStreamStringsYieldsStringChunks() async throws {
+        let payload = Data("hello-stream".utf8)
+        stubBody(payload, chunkSize: 3, chunkInterval: 0.01)
+        
+        var chunks: [String] = []
+        for try await chunk in Call<Empty>()
+            .path("/v1/stream-strings")
+            .streamStrings() {
+            chunks.append(chunk)
+            }
+        
+        XCTAssertGreaterThan(chunks.count, 1)
+        XCTAssertEqual(chunks.joined(), "hello-stream")
+    }
+
+    func testStreamStringsDoesNotStartUntilIterated() async throws {
+        let didStart = SendableBox(false)
+        StubURLProtocol.onStartLoading = {
+            didStart.value = true
+        }
+        stubBody(Data("lazy".utf8), chunkSize: 2, chunkInterval: 0.01)
+
+        let stream = Call<Empty>()
+            .path("/v1/lazy-stream-strings")
+            .streamStrings()
+
+        try await _Concurrency.Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(didStart.value)
+
+        var iterator = stream.makeAsyncIterator()
+        let first = try await iterator.next()
+
+        XCTAssertNotNil(first)
+        XCTAssertTrue(didStart.value)
+    }
+
+    func testStreamBytesValidatesStatusCodes() async {
+        stubBody(Data("server unavailable".utf8), statusCode: 503)
+        
+        do {
+            for try await _ in Call<Empty>()
+                .path("/v1/stream-503")
+                .validateSuccessCodes()
+                .streamBytes() {}
+            XCTFail("Expected status code failure")
+        } catch let IrisError.statusCode(response) {
+            XCTAssertEqual(response.statusCode, 503)
+        } catch {
+            XCTFail("Expected statusCode, got \(error)")
+        }
+    }
+
+    func testStreamBytesRunsPrepareBeforeWillSend() async throws {
+        let plugin = TestingPlugin()
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://api.example.com")
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+        stubBody(Data("prepared".utf8), chunkSize: 4, chunkInterval: 0.01)
+        
+        for try await _ in Call<Empty>()
+            .path("/v1/stream-prepared")
+            .streamBytes() {}
+        
+        XCTAssertEqual(plugin.prepareCalledCount, 1)
+        XCTAssertEqual(plugin.willSendCalledCount, 1)
+        XCTAssertTrue(plugin.didPrepare)
+    }
+
+    func testCancellingStreamBytesCancelsUnderlyingRequest() async {
+        let didStartUnderlyingRequest = expectation(description: "Underlying stream should start")
+        let didCancelUnderlyingRequest = expectation(description: "Underlying stream should be cancelled")
+        StubURLProtocol.responseDelay = 5
+        StubURLProtocol.onStartLoading = {
+            didStartUnderlyingRequest.fulfill()
+        }
+        StubURLProtocol.onStopLoading = {
+            didCancelUnderlyingRequest.fulfill()
+        }
+        stubBody(Data("slow stream".utf8))
+        
+        let task = _Concurrency.Task {
+            do {
+                for try await _ in Call<Empty>()
+                    .path("/v1/slow-stream")
+                    .streamBytes() {}
+            } catch {
+                // Cancellation may surface through the stream.
+            }
+        }
+        
+        await fulfillment(of: [didStartUnderlyingRequest], timeout: 1)
+        task.cancel()
+        await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
     }
     
     func testCancellingSendScopeCancelsUnderlyingRequest() async {
@@ -141,6 +275,58 @@ final class LiveRequestTests: XCTestCase {
         await fulfillment(of: [didStartUnderlyingRequest], timeout: 1)
         task.cancel()
         await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
+    }
+
+    func testThrowingSendScopeCancelsUnderlyingRequest() async {
+        struct BodyFailure: Error {}
+
+        let didCancelUnderlyingRequest = expectation(description: "Underlying request should be cancelled")
+        let started = AsyncStream.makeStream(of: Void.self)
+        StubURLProtocol.responseDelay = 5
+        StubURLProtocol.onStartLoading = {
+            started.continuation.yield(())
+            started.continuation.finish()
+        }
+        StubURLProtocol.onStopLoading = {
+            didCancelUnderlyingRequest.fulfill()
+        }
+        stubBody(Data("{}".utf8))
+
+        let task = _Concurrency.Task {
+            do {
+                _ = try await Call<Empty>()
+                    .path("/slow")
+                    .send { _ in
+                        for await _ in started.stream { break }
+                        throw BodyFailure()
+                    }
+                XCTFail("Expected body failure")
+            } catch is BodyFailure {
+                // Expected.
+            } catch {
+                XCTFail("Expected BodyFailure, got \(error)")
+            }
+        }
+
+        await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
+        task.cancel()
+    }
+
+    func testOnCompleteReceivesSessionMetrics() async throws {
+        stubBody(Data("{}".utf8))
+        let infoBox = SendableBox<CompletionInfo<Empty>?>(nil)
+
+        _ = try await Call<Empty>()
+            .path("/complete-metrics")
+            .onComplete { infoBox.value = $0 }
+            .send()
+
+        let info = try XCTUnwrap(infoBox.value)
+        XCTAssertNotNil(info.metrics)
+        XCTAssertGreaterThan(info.duration, 0)
+        XCTAssertGreaterThanOrEqual(info.serializationDuration, 0)
+        XCTAssertNotNil(info.model)
+        XCTAssertNil(info.error)
     }
     
     private func stubBody(

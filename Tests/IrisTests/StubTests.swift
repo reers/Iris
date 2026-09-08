@@ -384,27 +384,31 @@ final class StubTests: XCTestCase {
     }
     
     func testSendScopeProgressThenValue() async throws {
-        var fractions: [Double] = []
+        let fractions = SendableArray<Double>()
         
+        // Delayed stub so the body subscribes before stub sidecars fire;
+        // sidecar streams are live-only and drop values emitted before subscription.
         let response = try await Call.data()
             .path("/v1/media")
             .stub(Data([0x01]))
+            .stub(behavior: .delayed(0.05))
             .send { session in
                 for await progress in session.uploadProgress {
                     fractions.append(progress.fractionCompleted)
                 }
             }
         
-        XCTAssertEqual(fractions, [1])
+        XCTAssertEqual(fractions.values, [1])
         XCTAssertEqual(response.model, Data([0x01]))
     }
     
     func testSendScopeProgressAlongsideValue() async throws {
-        var fractions: [Double] = []
+        let fractions = SendableArray<Double>()
         
         let response = try await Call.data()
             .path("/v1/media")
             .stub(Data([0x01]))
+            .stub(behavior: .delayed(0.05))
             .send { session in
                 async let _ = session.value
                 for await progress in session.uploadProgress {
@@ -412,17 +416,18 @@ final class StubTests: XCTestCase {
                 }
             }
         
-        XCTAssertEqual(fractions, [1])
+        XCTAssertEqual(fractions.values, [1])
         XCTAssertEqual(response.model, Data([0x01]))
     }
     
     func testSendScopeChunksThenValue() async throws {
         let payload = #"{"token":"hi"}"#.data(using: .utf8)!
-        var chunks: [Data] = []
+        let chunks = SendableArray<Data>()
         
         let response = try await Call.data()
             .path("/v1/ai")
             .stub(payload)
+            .stub(behavior: .delayed(0.05))
             .stream()
             .send { session in
                 for await chunk in session.chunks {
@@ -430,28 +435,29 @@ final class StubTests: XCTestCase {
                 }
             }
         
-        XCTAssertEqual(chunks, [payload])
+        XCTAssertEqual(chunks.values, [payload])
         XCTAssertEqual(response.model, payload)
     }
     
     func testSendScopeAndHandlerBothReceiveProgress() async throws {
         let handlerCount = SendableBox(0)
-        var streamCount = 0
+        let streamCount = SendableBox(0)
         
         _ = try await Call.data()
             .path("/v1/media")
             .stub(Data([0x01]))
+            .stub(behavior: .delayed(0.05))
             .onUploadProgress { _ in
                 handlerCount.value += 1
             }
             .send { session in
                 for await _ in session.uploadProgress {
-                    streamCount += 1
+                    streamCount.value += 1
                 }
             }
         
         XCTAssertEqual(handlerCount.value, 1)
-        XCTAssertEqual(streamCount, 1)
+        XCTAssertEqual(streamCount.value, 1)
     }
     
     func testSendScopeEmptyBodyStillReturnsResponse() async throws {
@@ -512,6 +518,25 @@ final class StubTests: XCTestCase {
         XCTAssertEqual(plugin.willSendCalledCount, 1)
         XCTAssertEqual(plugin.didReceiveCalledCount, 1)
         XCTAssertEqual(plugin.processCalledCount, 1)
+    }
+
+    func testPrepareRunsBeforeWillSendDuringStub() async throws {
+        let plugin = TestingPlugin()
+        
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://api.example.com")
+                .stub(.immediate)
+                .plugin(plugin)
+        )
+        
+        _ = try await Call<GitHubUser>()
+            .path("/users/prepared")
+            .stub(GitHubUser(login: "prepared", id: 1))
+            .send()
+        
+        XCTAssertEqual(plugin.prepareCalledCount, 1)
+        XCTAssertTrue(plugin.didPrepare)
     }
     
     func testPluginCanModifyStubResponse() async throws {
@@ -627,10 +652,8 @@ final class StubTests: XCTestCase {
         _ = try await Call<GitHubUser>()
             .path("/users/oncomplete")
             .stub(GitHubUser(login: "oncomplete", id: 123))
-            .onComplete { response in
-                if case .success(let model) = response.result {
-                    receivedModel.value = model
-                }
+            .onComplete { info in
+                receivedModel.value = info.model
                 expectation.fulfill()
             }
             .send()
@@ -649,8 +672,8 @@ final class StubTests: XCTestCase {
         _ = try await Call<GitHubUser>()
             .path("/users/success")
             .stub(GitHubUser(login: "success", id: 1))
-            .onComplete { response in
-                if case .success = response.result {
+            .onComplete { info in
+                if case .success = info.result {
                     wasSuccess.value = true
                 }
                 expectation.fulfill()
@@ -673,10 +696,12 @@ final class StubTests: XCTestCase {
             _ = try await Call<GitHubUser>()
                 .path("/users/invalid")
                 .stub(invalidData)
-                .onComplete { response in
-                    if case .failure = response.result {
+                .onComplete { info in
+                    if case .failure(.objectMapping) = info.result {
                         wasFailure.value = true
                     }
+                    XCTAssertGreaterThanOrEqual(info.serializationDuration, 0)
+                    XCTAssertNil(info.metrics)
                     expectation.fulfill()
                 }
                 .send()
@@ -697,8 +722,8 @@ final class StubTests: XCTestCase {
         let user1 = try await Call<GitHubUser>()
             .path("/users/user1")
             .stub(GitHubUser(login: "user1", id: 1))
-            .onComplete { response in
-                if case .success(let model) = response.result {
+            .onComplete { info in
+                if let model = info.model {
                     savedUsers.append(model)
                 }
             }
@@ -707,8 +732,8 @@ final class StubTests: XCTestCase {
         let user2 = try await Call<GitHubUser>()
             .path("/users/user2")
             .stub(GitHubUser(login: "user2", id: 2))
-            .onComplete { response in
-                if case .success(let model) = response.result {
+            .onComplete { info in
+                if let model = info.model {
                     savedUsers.append(model)
                 }
             }
@@ -730,8 +755,8 @@ final class StubTests: XCTestCase {
         _ = try await Call<GitHubUser>()
             .path("/users/metadata")
             .stub(stubData)
-            .onComplete { response in
-                receivedData.value = response.data
+            .onComplete { info in
+                receivedData.value = info.data
                 expectation.fulfill()
             }
             .send()
@@ -755,10 +780,8 @@ final class StubTests: XCTestCase {
         _ = try await Call<[GitHubUser]>()
             .path("/users")
             .stub(stubData)
-            .onComplete { response in
-                if case .success(let models) = response.result {
-                    receivedUsers.value = models
-                }
+            .onComplete { info in
+                receivedUsers.value = info.model ?? []
                 expectation.fulfill()
             }
             .send()
@@ -780,8 +803,11 @@ final class StubTests: XCTestCase {
             .path("/users/delayed")
             .stub(GitHubUser(login: "delayed", id: 1))
             .stub(behavior: .delayed(delay))
-            .onComplete { _ in
+            .onComplete { info in
                 completedAt.value = Date()
+                XCTAssertNil(info.metrics)
+                XCTAssertGreaterThanOrEqual(info.duration, delay * 0.9)
+                XCTAssertGreaterThanOrEqual(info.serializationDuration, 0)
                 expectation.fulfill()
             }
             .send()

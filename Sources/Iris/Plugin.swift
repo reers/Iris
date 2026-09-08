@@ -23,9 +23,15 @@ import Foundation
 /// - Transforming response data
 /// - Injecting errors for testing
 ///
+/// Plugins are `Sendable` because they are stored on `IrisConfiguration` and
+/// invoked from Alamofire's request queue as well as Iris's async execution path.
+/// Prefer an immutable `struct` or `final class` with no shared mutable state.
+/// If a plugin must mutate, isolate that state with a lock and use
+/// `@unchecked Sendable`.
+///
 /// Example:
 /// ```swift
-/// class LoggingPlugin: PluginType {
+/// struct LoggingPlugin: PluginType {
 ///     func willSend(_ request: CallType, target: TargetType) {
 ///         print("Sending request to: \(target.path)")
 ///     }
@@ -35,18 +41,20 @@ import Foundation
 ///     }
 /// }
 /// ```
-public protocol PluginType {
+public protocol PluginType: Sendable {
     
     /// Called to modify a request before sending.
     ///
     /// Use this method to add headers, modify the URL, or make other changes
-    /// to the request before it's sent.
+    /// to the request before it's sent. Implementations may await token stores,
+    /// keychain wrappers, or other asynchronous state before returning.
     ///
     /// - Parameters:
     ///   - request: The URL request that will be sent.
     ///   - target: The target type that generated this request.
     /// - Returns: The modified (or unmodified) URL request.
-    func prepare(_ request: URLRequest, target: TargetType) -> URLRequest
+    /// - Throws: Any error that should fail the request before it is sent.
+    func prepare(_ request: URLRequest, target: TargetType) async throws -> URLRequest
 
     /// Called immediately before a request is sent over the network (or stubbed).
     ///
@@ -85,7 +93,7 @@ public protocol PluginType {
 public extension PluginType {
     
     /// Default implementation returns the request unchanged.
-    func prepare(_ request: URLRequest, target: TargetType) -> URLRequest { request }
+    func prepare(_ request: URLRequest, target: TargetType) async throws -> URLRequest { request }
     
     /// Default implementation does nothing.
     func willSend(_ request: CallType, target: TargetType) { }
@@ -103,7 +111,7 @@ public extension PluginType {
 ///
 /// This protocol provides a way to access request information without
 /// exposing Alamofire's internal types to plugins.
-public protocol CallType {
+public protocol CallType: Sendable {
 
     // Note:
     //
@@ -127,7 +135,7 @@ public protocol CallType {
 
     /// Authenticates the request with a credential.
     ///
-    /// - Parameter credential: The credential to use for authentication.
+    /// - Parameter credential: The credential to use.
     /// - Returns: Self for chaining.
     func authenticate(with credential: URLCredential) -> Self
 

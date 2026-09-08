@@ -9,11 +9,18 @@
 import Alamofire
 import Foundation
 
+private struct CallbackResultDelivery<Success, Failure: Error>: @unchecked Sendable {
+    let result: Result<Success, Failure>
+}
+
 /// A network request built using a chainable API.
 ///
 /// `Call` is Iris's signature feature that allows you to define all aspects
 /// of a network request in a single, fluent chain. This eliminates the need for
 /// separate enum cases or scattered configuration.
+///
+/// The decoded model must be `Sendable` so a `Call` can cross isolation
+/// domains into `send()` / `fetch()` and plugin callbacks.
 ///
 /// Use a `Decodable` model for JSON, `Call.data()` for the raw body, or
 /// `Call.empty()` when the body is unused.
@@ -41,18 +48,17 @@ import Foundation
 /// // Execute requests
 /// let user = try await Call<User>.getUser(id: 123).fetch()
 /// ```
-public struct Call<ResponseType: Decodable>: TargetType {
+public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     
     // MARK: - TargetType Properties
     
     /// The base URL for the request.
     ///
     /// If not set explicitly, falls back to the global configuration's baseURL.
-    public var baseURL: URL {
-        guard let baseURL = configuredBaseURL else {
-            preconditionFailure("baseURL is required unless path is an absolute URL")
-        }
-        return baseURL
+    /// `nil` when the request uses an absolute `path` and no base URL is
+    /// configured anywhere; see `fullURL` for the resolved request URL.
+    public var baseURL: URL? {
+        configuredBaseURL
     }
     
     /// The path component to append to the base URL.
@@ -69,6 +75,9 @@ public struct Call<ResponseType: Decodable>: TargetType {
     
     /// The validation type for response status codes.
     public var validationType: ValidationType = .none
+
+    /// Per-call retry policy. `nil` falls back to `IrisConfiguration.retryPolicy`.
+    public var retryPolicy: RetryPolicy?
     
     /// Sample data for stubbing during testing.
     public var sampleData: Data = Data()
@@ -82,16 +91,32 @@ public struct Call<ResponseType: Decodable>: TargetType {
     
     /// Custom base URL that overrides the global configuration.
     private var _baseURL: URL?
-    
+
     /// Service-scoped defaults applied between global configuration and request overrides.
     var service: IrisService?
-    
+
+    /// Client used to execute this request. Defaults to `IrisClient.shared`.
+    var client: IrisClient?
+
     /// Custom sample response that overrides the default 200 + sampleData stub.
     private var _sampleResponseClosure: Endpoint.SampleResponseClosure?
+
+    /// The client that will execute this request.
+    var resolvedClient: IrisClient {
+        client ?? service?.client ?? IrisClient.shared
+    }
     
     /// The per-request or globally configured base URL, if any.
     var configuredBaseURL: URL? {
-        _baseURL ?? service?.baseURL ?? Iris.configuration.baseURL
+        configuredBaseURL(over: resolvedClient.configuration)
+    }
+    
+    /// Resolves the base URL against a specific configuration snapshot.
+    ///
+    /// Requests resolve against the snapshot taken when they start, so a
+    /// mid-flight `Iris.configure(...)` cannot change their URL.
+    func configuredBaseURL(over configuration: IrisConfiguration) -> URL? {
+        _baseURL ?? service?.baseURL ?? configuration.baseURL
     }
     
     /// Per-request timeout that overrides the global configuration.
@@ -102,8 +127,23 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// Uses the per-request timeout when set, otherwise `IrisConfiguration.defaultTimeout`
     /// (which defaults to 30 seconds).
     public var timeout: TimeInterval {
-        get { _timeout ?? service?.timeout ?? Iris.configuration.defaultTimeout }
+        get { timeout(over: resolvedClient.configuration) }
         set { _timeout = newValue }
+    }
+    
+    /// Resolves the timeout against a specific configuration snapshot.
+    func timeout(over configuration: IrisConfiguration) -> TimeInterval {
+        _timeout ?? service?.timeout ?? configuration.defaultTimeout
+    }
+
+    /// Resolves retry against a specific configuration snapshot.
+    ///
+    /// A call-level policy wins, including `count == 0` which disables a
+    /// configuration default. `nil` means no retry.
+    func retryPolicy(over configuration: IrisConfiguration) -> RetryPolicy? {
+        let policy = retryPolicy ?? configuration.retryPolicy
+        guard let policy, policy.count > 0 else { return nil }
+        return policy
     }
     
     /// Custom JSON decoder for response parsing.
@@ -120,20 +160,20 @@ public struct Call<ResponseType: Decodable>: TargetType {
     
     /// Upload progress sidecar. Does not start the request; pair with `send()` / `fetch()`.
     /// Invoked on `uploadProgressQueue`.
-    var uploadProgressHandler: ((Progress) -> Void)?
+    var uploadProgressHandler: (@Sendable (Progress) -> Void)?
     
     /// Queue for `uploadProgressHandler`. Defaults to the main queue.
     var uploadProgressQueue: DispatchQueue = .main
     
     /// Download progress sidecar. Does not start the request; pair with `send()` / `fetch()`.
     /// Invoked on `downloadProgressQueue`.
-    var downloadProgressHandler: ((Progress) -> Void)?
+    var downloadProgressHandler: (@Sendable (Progress) -> Void)?
     
     /// Queue for `downloadProgressHandler`. Defaults to the main queue.
     var downloadProgressQueue: DispatchQueue = .main
     
     /// Stream chunk sidecar. Invoked on `chunkQueue` for each body fragment when `isStream` is true.
-    var chunkHandler: ((Data) -> Void)?
+    var chunkHandler: (@Sendable (Data) -> Void)?
     
     /// Queue for `chunkHandler`. Defaults to the main queue.
     var chunkQueue: DispatchQueue = .main
@@ -142,7 +182,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// Does not start the request. Use `onComplete(_:)` for cache / database / shared
     /// error UI. Call-site results belong on `send(on:completion:)` / `fetch(on:completion:)`.
-    public var onCompleteHandler: (@Sendable (AFDataResponse<ResponseType>) -> Void)?
+    public var onCompleteHandler: (@Sendable (CompletionInfo<ResponseType>) -> Void)?
     
     // MARK: - Initialization
     
@@ -180,7 +220,57 @@ public struct Call<ResponseType: Decodable>: TargetType {
         request._timeout = timeout
         return request
     }
+
+    /// Sets a retry policy, overriding the configuration default.
+    ///
+    /// - Parameter policy: The retry policy. `count` of `0` disables retry.
+    /// - Returns: A new call with the updated retry policy.
+    public func retry(_ policy: RetryPolicy) -> Call<ResponseType> {
+        var request = self
+        request.retryPolicy = policy
+        return request
+    }
+
+    /// Retries retryable failures a limited number of times.
+    ///
+    /// - Parameters:
+    ///   - count: Extra retries after the first attempt. `0` disables retry.
+    ///   - interval: Base delay in seconds before the first retry. Default is `0.5`.
+    ///   - backoff: Delay growth. Default is exponential.
+    ///   - idempotentOnly: When `true`, POST / PATCH are not retried. Default is `true`.
+    /// - Returns: A new call with the updated retry policy.
+    public func retry(
+        count: Int,
+        interval: TimeInterval = 0.5,
+        backoff: RetryPolicy.Backoff = .exponential,
+        idempotentOnly: Bool = true
+    ) -> Call<ResponseType> {
+        retry(
+            RetryPolicy(
+                count: count,
+                interval: interval,
+                backoff: backoff,
+                idempotentOnly: idempotentOnly
+            )
+        )
+    }
     
+    /// Sets the client used to execute this request.
+    ///
+    /// - Parameter client: The client whose configuration and session should be used.
+    /// - Returns: A new call bound to the given client.
+    public func client(_ client: IrisClient) -> Call<ResponseType> {
+        var request = self
+        request.client = client
+        return request
+    }
+
+    func bound(to client: IrisClient) -> Call<ResponseType> {
+        var request = self
+        request.client = client
+        return request
+    }
+
     // MARK: - Headers Configuration
     
     /// Sets all request headers.
@@ -202,7 +292,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     public func header(_ key: String, _ value: String) -> Call<ResponseType> {
         var request = self
         var currentHeaders = request.headers ?? [:]
-        currentHeaders[key] = value
+        currentHeaders.setHTTPHeaderField(key, value: value)
         request.headers = currentHeaders
         return request
     }
@@ -239,7 +329,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter parameters: The query parameters.
     /// - Returns: A new call with URL-encoded query parameters.
-    public func query(_ parameters: [String: Any]) -> Call<ResponseType> {
+    public func query(_ parameters: Parameters) -> Call<ResponseType> {
         var request = self
         request.task = .requestParameters(parameters: parameters, encoding: URLEncoding.queryString)
         return request
@@ -249,7 +339,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter parameters: The body parameters.
     /// - Returns: A new call with JSON-encoded body.
-    public func body(_ parameters: [String: Any]) -> Call<ResponseType> {
+    public func body(_ parameters: Parameters) -> Call<ResponseType> {
         var request = self
         request.task = .requestParameters(parameters: parameters, encoding: JSONEncoding.default)
         return request
@@ -273,8 +363,8 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter builder: A closure that receives an `inout` dictionary to populate.
     /// - Returns: A new call with JSON-encoded body.
-    public func body(_ builder: (_ json: inout [String: Any]) -> Void) -> Call<ResponseType> {
-        var parameters: [String: Any] = [:]
+    public func body(_ builder: (_ json: inout Parameters) -> Void) -> Call<ResponseType> {
+        var parameters: Parameters = [:]
         builder(&parameters)
         return body(parameters)
     }
@@ -285,7 +375,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter encodable: The object to encode as JSON.
     /// - Returns: A new call with JSON-encoded body.
-    public func body<T: Encodable>(_ encodable: T) -> Call<ResponseType> {
+    public func body<T: Encodable & Sendable>(_ encodable: T) -> Call<ResponseType> {
         var request = self
         request.task = .requestJSONEncodable(encodable)
         return request
@@ -297,7 +387,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - encodable: The object to encode.
     ///   - encoder: The custom JSON encoder.
     /// - Returns: A new call with custom-encoded body.
-    public func body<T: Encodable>(_ encodable: T, encoder: JSONEncoder) -> Call<ResponseType> {
+    public func body<T: Encodable & Sendable>(_ encodable: T, encoder: JSONEncoder) -> Call<ResponseType> {
         var request = self
         request.task = .requestCustomJSONEncodable(encodable, encoder: encoder)
         return request
@@ -317,7 +407,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter parameters: The form parameters.
     /// - Returns: A new call with form-encoded body.
-    public func formBody(_ parameters: [String: Any]) -> Call<ResponseType> {
+    public func formBody(_ parameters: Parameters) -> Call<ResponseType> {
         var request = self
         request.task = .requestParameters(parameters: parameters, encoding: URLEncoding.httpBody)
         return request
@@ -331,9 +421,9 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - bodyEncoding: The encoding for body parameters. Default is JSON.
     /// - Returns: A new call with composite parameters.
     public func composite(
-        query: [String: Any],
-        body: [String: Any],
-        bodyEncoding: ParameterEncoding = JSONEncoding.default
+        query: Parameters,
+        body: Parameters,
+        bodyEncoding: any ParameterEncoding = JSONEncoding.default
     ) -> Call<ResponseType> {
         var request = self
         request.task = .requestCompositeParameters(
@@ -384,7 +474,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A new call configured for multipart upload with query parameters.
     public func upload(
         multipart formData: MultipartFormData,
-        query: [String: Any]
+        query: Parameters
     ) -> Call<ResponseType> {
         var request = self
         request.task = .uploadCompositeMultipartFormData(formData, urlParameters: query)
@@ -411,8 +501,8 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - destination: A closure that determines where to save the downloaded file.
     /// - Returns: A new call configured for file download with parameters.
     public func download(
-        parameters: [String: Any],
-        encoding: ParameterEncoding = URLEncoding.default,
+        parameters: Parameters,
+        encoding: any ParameterEncoding = URLEncoding.default,
         to destination: @escaping DownloadDestination
     ) -> Call<ResponseType> {
         var request = self
@@ -499,7 +589,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A new call with the progress handler.
     public func onUploadProgress(
         on queue: DispatchQueue = .main,
-        _ handler: @escaping (Progress) -> Void
+        _ handler: @escaping @Sendable (Progress) -> Void
     ) -> Call<ResponseType> {
         var request = self
         request.uploadProgressHandler = handler
@@ -519,7 +609,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A new call with the progress handler.
     public func onDownloadProgress(
         on queue: DispatchQueue = .main,
-        _ handler: @escaping (Progress) -> Void
+        _ handler: @escaping @Sendable (Progress) -> Void
     ) -> Call<ResponseType> {
         var request = self
         request.downloadProgressHandler = handler
@@ -540,7 +630,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A new call with the chunk handler.
     public func onChunk(
         on queue: DispatchQueue = .main,
-        _ handler: @escaping (Data) -> Void
+        _ handler: @escaping @Sendable (Data) -> Void
     ) -> Call<ResponseType> {
         var request = self
         request.chunkHandler = handler
@@ -569,27 +659,27 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// for `send(on:completion:)`.
     ///
     /// If both are chained, both fire: `onComplete` first on the current thread with
-    /// `AFDataResponse`, then the completion wrapper on its queue with
+    /// `CompletionInfo`, then the completion wrapper on its queue with
     /// `Result<Response, IrisError>`.
     ///
     /// Example:
     /// ```swift
     /// Call<Meet>()
     ///     .path("/meets/\(id)")
-    ///     .onComplete { resp in
-    ///         switch resp.result {
-    ///         case .success(let model):
-    ///             AppDatabase.shared.saveMeet(model)
-    ///         case .failure:
-    ///             resp.errorMessage()?.showMessage()
+    ///     .onComplete { info in
+    ///         switch info.result {
+    ///         case .success(let response):
+    ///             AppDatabase.shared.saveMeet(response.model)
+    ///         case .failure(let error):
+    ///             error.errorDescription?.showMessage()
     ///         }
     ///     }
     ///     .fetch()
     /// ```
     ///
-    /// - Parameter handler: A closure called with the decoded Alamofire response.
+    /// - Parameter handler: Called with Iris completion info after decode.
     /// - Returns: A new call with the completion handler.
-    public func onComplete(_ handler: @escaping @Sendable (AFDataResponse<ResponseType>) -> Void) -> Call<ResponseType> {
+    public func onComplete(_ handler: @escaping @Sendable (CompletionInfo<ResponseType>) -> Void) -> Call<ResponseType> {
         var request = self
         request.onCompleteHandler = handler
         return request
@@ -650,8 +740,26 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - model: The model to encode as stub data.
     ///   - encoder: The encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
     /// - Returns: A new call with the encoded stub data.
-    public func stub<T: Encodable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) -> Call<ResponseType> {
-        stub((try? encoder.encode(model)) ?? Data())
+    public func stub<T: Encodable & Sendable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) -> Call<ResponseType> {
+        do {
+            return try stubEncoded(model, encoder: encoder)
+        } catch {
+            preconditionFailure("Failed to encode stub model: \(error)")
+        }
+    }
+
+    /// Sets stub data from an Encodable object, surfacing encoding failures.
+    ///
+    /// Use this overload when tests need to assert or recover from custom
+    /// `Encodable` failures instead of failing fast.
+    ///
+    /// - Parameters:
+    ///   - model: The model to encode as stub data.
+    ///   - encoder: The encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
+    /// - Returns: A new call with the encoded stub data.
+    /// - Throws: Any error thrown by `JSONEncoder`.
+    public func stubEncoded<T: Encodable & Sendable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) throws -> Call<ResponseType> {
+        stub(try encoder.encode(model))
     }
     
     /// Sets stub data from a string.
@@ -702,6 +810,10 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// `send(on:completion:)`, which is the GCD callback overload — use
     /// `try await send { session in ... }` so the compiler picks this one.
     ///
+    /// Sidecar streams are live-only: values emitted before a stream is created
+    /// are not replayed. Access `session.uploadProgress`, `session.downloadProgress`,
+    /// or `session.chunks` at the start of `body` to observe the full sequence.
+    ///
     /// Recipe sidecars (`onUploadProgress`, `onChunk`, `onComplete`) still fire
     /// on the same probe. Prefer one style per kind of sidecar at the call site.
     ///
@@ -719,9 +831,33 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: The decoded `Response`.
     /// - Throws: `IrisError` from the request, or errors thrown by `body`.
     public func send(
-        _ body: (CallSession<ResponseType>) async throws -> Void
+        _ body: @Sendable (CallSession<ResponseType>) async throws -> Void
     ) async throws -> Response<ResponseType> {
         try await Iris.send(self, body)
+    }
+
+    /// Streams response body bytes without accumulating them into a final `Response`.
+    ///
+    /// This is a terminal API, similar to Alamofire's `responseStream`. Cancelling
+    /// the consuming task cancels the underlying request. Calling this method only
+    /// creates the sequence; the request starts when the sequence is first iterated.
+    /// Use `stream().send { ... }` instead when you need chunks plus a final
+    /// decoded `Response`.
+    ///
+    /// - Returns: An async sequence of raw `Data` chunks.
+    public func streamBytes() -> AsyncThrowingStream<Data, Error> {
+        Iris.streamBytes(self)
+    }
+
+    /// Streams response body text chunks without accumulating them into a final `Response`.
+    ///
+    /// This is a terminal API, similar to Alamofire's `responseStreamString`.
+    /// Calling this method only creates the sequence; the request starts when the
+    /// sequence is first iterated. It does not parse lines or Server-Sent Events.
+    ///
+    /// - Returns: An async sequence of `String` chunks.
+    public func streamStrings() -> AsyncThrowingStream<String, Error> {
+        Iris.streamStrings(self)
     }
     
     /// Sends the request and delivers the result to a completion handler.
@@ -755,7 +891,8 @@ public struct Call<ResponseType: Decodable>: TargetType {
             } catch {
                 result = .failure(.underlying(error, nil))
             }
-            queue.async { completion(result) }
+            let delivery = CallbackResultDelivery(result: result)
+            queue.async { completion(delivery.result) }
         }
     }
     
@@ -830,7 +967,7 @@ public extension Call where ResponseType == String {
 /// Use `Call<Data>` when you need the raw bytes.
 
 /// A type that accepts any JSON response without parsing.
-public struct Empty: Decodable {
+public struct Empty: Decodable, Sendable {
     
     /// Creates an empty instance.
     public init() {}

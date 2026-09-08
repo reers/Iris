@@ -36,6 +36,7 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertTrue(config.plugins.isEmpty)
         XCTAssertNotNil(config.session)
         XCTAssertNil(config.stubBehavior)
+        XCTAssertNil(config.retryPolicy)
     }
     
     // MARK: - BaseURL Configuration Tests
@@ -98,6 +99,15 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertEqual(config.defaultHeaders["Content-Type"], "application/json")
     }
     
+    func testHeadersMergeOverridesExistingHeadersIgnoringCase() {
+        let config = IrisConfiguration()
+            .header("Accept", "application/json")
+            .headers(["accept": "text/plain"])
+
+        XCTAssertEqual(config.defaultHeaders["Accept"], "text/plain")
+        XCTAssertNil(config.defaultHeaders["accept"])
+    }
+
     // MARK: - Timeout Configuration Tests
     
     func testTimeout() {
@@ -264,7 +274,7 @@ final class ConfigurationTests: XCTestCase {
         let timeout: TimeInterval = 45
         let decoder = JSONDecoder()
         let encoder = JSONEncoder()
-        let plugins: [PluginType] = [TestingPlugin()]
+        let plugins: [any PluginType] = [TestingPlugin()]
         let session = Session()
         let stubBehavior = StubBehavior.immediate
         
@@ -291,5 +301,14 @@ final class ConfigurationTests: XCTestCase {
         } else {
             XCTFail("Expected immediate stub behavior")
         }
+    }
+
+    func testRetryBuilder() {
+        let config = IrisConfiguration()
+            .retry(count: 3, interval: 0.25, backoff: .linear)
+
+        XCTAssertEqual(config.retryPolicy?.count, 3)
+        XCTAssertEqual(config.retryPolicy?.interval, 0.25)
+        XCTAssertEqual(config.retryPolicy?.backoff, .linear)
     }
 }

@@ -258,13 +258,12 @@ final class IrisTests: XCTestCase {
             .stub(User(id: 1, name: "Test"))
             .send()
         
-        // Both plugins should be called
-        // Note: In stub mode, `prepare` is not called (no real URLRequest to prepare)
-        // So only willSend, didReceive, and process are called
+        // Both plugins should be called. Stub mode prepares the synthetic
+        // URLRequest before willSend so plugin behavior matches live requests.
         XCTAssertEqual(plugin1.willSendCalledCount, 1)
         XCTAssertEqual(plugin1.didReceiveCalledCount, 1)
-        XCTAssertEqual(plugin2.callOrder.count, 3) // willSend, didReceive, process (no prepare in stub mode)
-        XCTAssertEqual(plugin2.callOrder, ["willSend", "didReceive", "process"])
+        XCTAssertEqual(plugin2.callOrder.count, 4)
+        XCTAssertEqual(plugin2.callOrder, ["prepare", "willSend", "didReceive", "process"])
     }
 }
 

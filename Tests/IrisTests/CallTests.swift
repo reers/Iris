@@ -38,6 +38,16 @@ final class CallTests: XCTestCase {
         
         XCTAssertEqual(request.timeout, 60)
     }
+
+    func testRetryConfiguration() {
+        let request = Call<Empty>()
+            .retry(count: 2, interval: 0.5, backoff: .none)
+
+        XCTAssertEqual(request.retryPolicy?.count, 2)
+        XCTAssertEqual(request.retryPolicy?.interval, 0.5)
+        XCTAssertEqual(request.retryPolicy?.backoff, RetryPolicy.Backoff.none)
+        XCTAssertEqual(request.retryPolicy?.idempotentOnly, true)
+    }
     
     func testTimeoutFallsBackToConfiguration() {
         Iris.configure(IrisConfiguration().timeout(45))
@@ -110,10 +120,19 @@ final class CallTests: XCTestCase {
         XCTAssertEqual(request.headers?["Header2"], "value2")
     }
     
+    func testHeaderConfigurationOverridesExistingHeaderIgnoringCase() {
+        let request = Call<Empty>()
+            .header("Accept", "application/json")
+            .header("accept", "text/plain")
+
+        XCTAssertEqual(request.headers?["Accept"], "text/plain")
+        XCTAssertNil(request.headers?["accept"])
+    }
+
     func testServiceHeadersMergeBetweenGlobalAndRequestHeaders() async throws {
-        var capturedHeaders: [String: String] = [:]
+        let capturedHeaders = SendableBox<[String: String]>([:])
         StubURLProtocol.handler = { request in
-            capturedHeaders = request.allHTTPHeaderFields ?? [:]
+            capturedHeaders.value = request.allHTTPHeaderFields ?? [:]
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -123,7 +142,7 @@ final class CallTests: XCTestCase {
             return (response, Data("{}".utf8))
         }
         defer { StubURLProtocol.reset() }
-        
+
         Iris.configure(
             IrisConfiguration()
                 .baseURL("https://global.example.com")
@@ -148,12 +167,42 @@ final class CallTests: XCTestCase {
             ])
             .send()
         
-        XCTAssertEqual(capturedHeaders["X-Global"], "global")
-        XCTAssertEqual(capturedHeaders["X-Service"], "service")
-        XCTAssertEqual(capturedHeaders["X-Request"], "request")
-        XCTAssertEqual(capturedHeaders["X-Shared"], "request")
+        XCTAssertEqual(capturedHeaders.value["X-Global"], "global")
+        XCTAssertEqual(capturedHeaders.value["X-Service"], "service")
+        XCTAssertEqual(capturedHeaders.value["X-Request"], "request")
+        XCTAssertEqual(capturedHeaders.value["X-Shared"], "request")
     }
     
+    func testRequestHeadersOverrideDefaultHeadersIgnoringCase() async throws {
+        let capturedHeaders = SendableBox<[String: String]>([:])
+        StubURLProtocol.handler = { request in
+            capturedHeaders.value = request.allHTTPHeaderFields ?? [:]
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://global.example.com")
+                .header("Accept", "application/json")
+                .session(makeStubbedSession())
+        )
+
+        _ = try await Call<Empty>()
+            .path("/headers")
+            .header("accept", "text/plain")
+            .send()
+
+        XCTAssertEqual(capturedHeaders.value["Accept"], "text/plain")
+        XCTAssertNil(capturedHeaders.value["accept"])
+    }
+
     func testServiceBaseURLOverridesConfigurationBaseURL() {
         Iris.configure(IrisConfiguration().baseURL("https://global.example.com"))
         let service = IrisService(baseURL: URL(string: "https://service.example.com")!)
@@ -172,6 +221,234 @@ final class CallTests: XCTestCase {
         XCTAssertEqual(request.configuredBaseURL?.absoluteString, "https://request.example.com")
     }
     
+    func testCallClientOverridesSharedConfiguration() async throws {
+        let capturedURL = SendableBox<URL?>(nil)
+        StubURLProtocol.handler = { request in
+            capturedURL.value = request.url
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://shared.example.com")
+                .session(makeStubbedSession())
+        )
+        let client = IrisClient(
+            configuration: IrisConfiguration()
+                .baseURL("https://client.example.com")
+                .session(makeStubbedSession())
+        )
+
+        _ = try await Call<Empty>()
+            .client(client)
+            .path("/resource")
+            .send()
+
+        XCTAssertEqual(capturedURL.value?.absoluteString, "https://client.example.com/resource")
+    }
+
+    func testServiceClientAppliesToCreatedCalls() async throws {
+        let capturedURL = SendableBox<URL?>(nil)
+        StubURLProtocol.handler = { request in
+            capturedURL.value = request.url
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://shared.example.com")
+                .session(makeStubbedSession())
+        )
+        let client = IrisClient(
+            configuration: IrisConfiguration()
+                .baseURL("https://client.example.com")
+                .session(makeStubbedSession())
+        )
+        let service = IrisService(client: client)
+
+        _ = try await service.call(Empty.self)
+            .path("/resource")
+            .send()
+
+        XCTAssertEqual(capturedURL.value?.absoluteString, "https://client.example.com/resource")
+    }
+
+    func testRequestClientOverridesServiceClient() async throws {
+        let capturedURL = SendableBox<URL?>(nil)
+        StubURLProtocol.handler = { request in
+            capturedURL.value = request.url
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        let serviceClient = IrisClient(
+            configuration: IrisConfiguration()
+                .baseURL("https://service-client.example.com")
+                .session(makeStubbedSession())
+        )
+        let requestClient = IrisClient(
+            configuration: IrisConfiguration()
+                .baseURL("https://request-client.example.com")
+                .session(makeStubbedSession())
+        )
+        let service = IrisService(client: serviceClient)
+
+        _ = try await service.call(Empty.self)
+            .client(requestClient)
+            .path("/resource")
+            .send()
+
+        XCTAssertEqual(capturedURL.value?.absoluteString, "https://request-client.example.com/resource")
+    }
+
+    func testIrisClientSendUsesClientConfiguration() async throws {
+        let capturedURL = SendableBox<URL?>(nil)
+        StubURLProtocol.handler = { request in
+            capturedURL.value = request.url
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        let client = IrisClient(
+            configuration: IrisConfiguration()
+                .baseURL("https://direct-client.example.com")
+                .session(makeStubbedSession())
+        )
+
+        _ = try await client.send(
+            Call<Empty>()
+                .path("/resource")
+        )
+
+        XCTAssertEqual(capturedURL.value?.absoluteString, "https://direct-client.example.com/resource")
+    }
+
+    func testIrisClientFetchUsesClientConfiguration() async throws {
+        let capturedURL = SendableBox<URL?>(nil)
+        StubURLProtocol.handler = { request in
+            capturedURL.value = request.url
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data(#"{"login":"direct","id":42}"#.utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        let client = IrisClient(
+            configuration: IrisConfiguration()
+                .baseURL("https://direct-client.example.com")
+                .session(makeStubbedSession())
+        )
+
+        let user = try await client.fetch(
+            Call<GitHubUser>()
+                .path("/user")
+        )
+
+        XCTAssertEqual(capturedURL.value?.absoluteString, "https://direct-client.example.com/user")
+        XCTAssertEqual(user, GitHubUser(login: "direct", id: 42))
+    }
+
+    func testIrisClientSendExposesClientConfigurationToPlugins() async throws {
+        let capturedTargetURLs = SendableArray<String>()
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        let client = IrisClient(
+            configuration: IrisConfiguration()
+                .baseURL("https://direct-client.example.com")
+                .session(makeStubbedSession())
+                .plugin(BaseURLRecorderPlugin(captured: capturedTargetURLs))
+        )
+
+        _ = try await client.send(
+            Call<Empty>()
+                .path("/resource")
+        )
+
+        XCTAssertEqual(capturedTargetURLs.values, [
+            "https://direct-client.example.com",
+            "https://direct-client.example.com/resource"
+        ])
+    }
+
+    func testIrisClientUsesClientEncoderForEncodableRequestBody() async throws {
+        struct Probe: Encodable {
+            let userName: String
+        }
+
+        let capturedBody = SendableBox<Data?>(nil)
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let client = IrisClient(
+            configuration: IrisConfiguration()
+                .baseURL("https://direct-client.example.com")
+                .encoder(encoder)
+                .session(makeStubbedSession())
+                .plugin(BodyCapturingPlugin(body: capturedBody))
+        )
+
+        _ = try await client.send(
+            Call<Empty>()
+                .path("/body")
+                .method(.post)
+                .body(Probe(userName: "ada"))
+        )
+
+        let body = try XCTUnwrap(capturedBody.value)
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: String]
+        XCTAssertEqual(json?["user_name"], "ada")
+        XCTAssertNil(json?["userName"])
+    }
+
     func testAuthorizationHeader() {
         let request = Call<Empty>()
             .authorization("Basic abc123")
@@ -202,9 +479,9 @@ final class CallTests: XCTestCase {
     }
     
     func testBodyDictionary() {
-        // Explicitly cast to [String: Any] to use the dictionary overload
+        // Explicitly cast to Parameters to use the dictionary overload
         // instead of the Encodable overload
-        let params: [String: Any] = ["name": "test"]
+        let params: Parameters = ["name": "test"]
         let request = Call<Empty>()
             .body(params)
         
@@ -411,7 +688,7 @@ final class CallTests: XCTestCase {
         let request = Call<Empty>()
             .baseURL("https://api.example.com")
         
-        XCTAssertEqual(request.baseURL.absoluteString, "https://api.example.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://api.example.com")
     }
     
     func testBaseURLFallsBackToGlobalConfiguration() {
@@ -419,7 +696,7 @@ final class CallTests: XCTestCase {
         
         let request = Call<Empty>()
         
-        XCTAssertEqual(request.baseURL.absoluteString, "https://global.example.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://global.example.com")
     }
     
     func testBaseURLOverridesGlobalConfiguration() {
@@ -428,7 +705,55 @@ final class CallTests: XCTestCase {
         let request = Call<Empty>()
             .baseURL("https://local.example.com")
         
-        XCTAssertEqual(request.baseURL.absoluteString, "https://local.example.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://local.example.com")
+    }
+    
+    /// Previously `baseURL` hit a `preconditionFailure` here; it must return nil.
+    func testBaseURLIsNilWhenUnsetWithAbsolutePath() {
+        let request = Call<Empty>()
+            .path("https://api.example.com/users/octocat")
+        
+        XCTAssertNil(request.baseURL)
+    }
+    
+    func testFullURLReturnsAbsolutePathAsIs() {
+        let request = Call<Empty>()
+            .path("https://api.example.com/users/octocat")
+        
+        XCTAssertEqual(request.fullURL?.absoluteString, "https://api.example.com/users/octocat")
+    }
+    
+    func testFullURLResolvesRelativePathAgainstBaseURL() {
+        let request = Call<Empty>()
+            .baseURL("https://api.example.com")
+            .path("/users/octocat")
+        
+        XCTAssertEqual(request.fullURL?.absoluteString, "https://api.example.com/users/octocat")
+    }
+    
+    func testFullURLIsNilForRelativePathWithoutBaseURL() {
+        let request = Call<Empty>()
+            .path("/users/octocat")
+        
+        XCTAssertNil(request.fullURL)
+    }
+    
+    /// A plugin reading `target.baseURL` on an absolute-path request with no
+    /// base URL configured anywhere must see nil, not crash the process.
+    func testPluginReadsBaseURLSafelyWhenUnset() async throws {
+        let captured = SendableArray<String>()
+        
+        Iris.configuration = IrisConfiguration()
+            .plugin(BaseURLRecorderPlugin(captured: captured))
+        
+        let response = try await Call<GitHubUser>()
+            .path("https://api.example.com/users/octocat")
+            .stub(GitHubUser(login: "octocat", id: 1))
+            .stub(behavior: .immediate)
+            .send()
+        
+        XCTAssertEqual(response.model.login, "octocat")
+        XCTAssertEqual(captured.values, ["nil", "https://api.example.com/users/octocat"])
     }
     
     func testResolveAbsolutePathDoesNotNeedBaseURL() throws {
@@ -527,6 +852,19 @@ final class CallTests: XCTestCase {
         XCTAssertNil(json["user_name"])
     }
     
+    func testThrowingStubFromEncodableSurfacesEncodingError() {
+        struct EncodingFailure: Error {}
+        struct FailingEncodable: Encodable {
+            func encode(to encoder: Encoder) throws {
+                throw EncodingFailure()
+            }
+        }
+
+        XCTAssertThrowsError(try Call<Empty>().stubEncoded(FailingEncodable())) { error in
+            XCTAssertTrue(error is EncodingFailure)
+        }
+    }
+
     func testStubFromString() {
         let request = Call<Empty>()
             .stub("{\"name\": \"test\"}")
@@ -629,7 +967,7 @@ final class CallTests: XCTestCase {
             .timeout(30)
             .validateSuccessCodes()
         
-        XCTAssertEqual(request.baseURL.absoluteString, "https://api.github.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://api.github.com")
         XCTAssertEqual(request.path, "/users/octocat")
         XCTAssertEqual(request.method, .get)
         XCTAssertEqual(request.headers?["Accept"], "application/json")
@@ -720,11 +1058,30 @@ final class CallTests: XCTestCase {
             .stub("test data")
         
         // Test TargetType protocol conformance
-        XCTAssertEqual(request.baseURL.absoluteString, "https://api.example.com")
+        XCTAssertEqual(request.baseURL?.absoluteString, "https://api.example.com")
         XCTAssertEqual(request.path, "/test")
         XCTAssertEqual(request.method, .post)
         XCTAssertEqual(request.headers?["X-Custom"], "value")
         XCTAssertEqual(request.validationType, .successCodes)
         XCTAssertEqual(String(data: request.sampleData, encoding: .utf8), "test data")
+    }
+}
+
+/// Records `target.baseURL` then `target.fullURL` as seen by plugins.
+private struct BaseURLRecorderPlugin: PluginType {
+    let captured: SendableArray<String>
+    
+    func willSend(_ request: CallType, target: TargetType) {
+        captured.append(target.baseURL?.absoluteString ?? "nil")
+        captured.append(target.fullURL?.absoluteString ?? "nil")
+    }
+}
+
+private struct BodyCapturingPlugin: PluginType {
+    let body: SendableBox<Data?>
+
+    func prepare(_ request: URLRequest, target: TargetType) -> URLRequest {
+        body.value = request.httpBody
+        return request
     }
 }

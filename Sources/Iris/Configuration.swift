@@ -27,7 +27,7 @@ import Alamofire
 ///         .plugin(AuthPlugin())
 /// )
 /// ```
-public struct IrisConfiguration {
+public struct IrisConfiguration: Sendable {
     
     /// The base URL for all requests.
     ///
@@ -58,9 +58,11 @@ public struct IrisConfiguration {
     
     /// The list of plugins to apply to all requests.
     ///
-    /// Plugins are called in order for request preparation and in reverse order
-    /// for response processing.
-    public var plugins: [PluginType]
+    /// All plugin callbacks (`prepare`, `willSend`, `didReceive`, `process`)
+    /// are invoked in registration order. If you need wrapping (onion-style)
+    /// semantics, register the outermost plugin first and order the rest
+    /// accordingly.
+    public var plugins: [any PluginType]
     
     /// The Alamofire session used for network requests.
     ///
@@ -72,6 +74,12 @@ public struct IrisConfiguration {
     /// Set to a non-nil value to enable stubbing globally. Individual requests
     /// can override this setting.
     public var stubBehavior: StubBehavior?
+
+    /// Default retry policy for live requests that do not set their own.
+    ///
+    /// Stub responses never retry. A call-level `.retry(...)` overrides this,
+    /// including `.retry(count: 0)` which disables the default.
+    public var retryPolicy: RetryPolicy?
     
     /// Creates a new configuration with default values.
     ///
@@ -84,15 +92,17 @@ public struct IrisConfiguration {
     ///   - plugins: The plugin list. Default is empty.
     ///   - session: The Alamofire session. Default is `Session.default`.
     ///   - stubBehavior: The stub behavior. Default is nil (no stubbing).
+    ///   - retryPolicy: Default retry policy. Default is nil (no retry).
     public init(
         baseURL: URL? = nil,
         defaultHeaders: [String: String] = [:],
         defaultTimeout: TimeInterval = 30,
         jsonDecoder: JSONDecoder = JSONDecoder(),
         jsonEncoder: JSONEncoder = JSONEncoder(),
-        plugins: [PluginType] = [],
+        plugins: [any PluginType] = [],
         session: Session = Session.default,
-        stubBehavior: StubBehavior? = nil
+        stubBehavior: StubBehavior? = nil,
+        retryPolicy: RetryPolicy? = nil
     ) {
         self.baseURL = baseURL
         self.defaultHeaders = defaultHeaders
@@ -102,6 +112,7 @@ public struct IrisConfiguration {
         self.plugins = plugins
         self.session = session
         self.stubBehavior = stubBehavior
+        self.retryPolicy = retryPolicy
     }
 }
 
@@ -112,7 +123,18 @@ public extension Iris {
     /// The global configuration instance.
     ///
     /// This configuration applies to all requests made through Iris.
-    static var configuration = IrisConfiguration()
+    ///
+    /// Individual reads and writes are atomic. A request snapshots the
+    /// configuration when it starts, so replacing the global value while a
+    /// request is in flight does not affect that request.
+    static var configuration: IrisConfiguration {
+        get {
+            IrisClient.shared.configuration
+        }
+        set {
+            IrisClient.shared.configuration = newValue
+        }
+    }
     
     /// Replaces the global configuration.
     ///
@@ -154,7 +176,7 @@ public extension IrisConfiguration {
     /// - Returns: A new configuration with the added header.
     func header(_ key: String, _ value: String) -> IrisConfiguration {
         var config = self
-        config.defaultHeaders[key] = value
+        config.defaultHeaders.setHTTPHeaderField(key, value: value)
         return config
     }
     
@@ -165,7 +187,7 @@ public extension IrisConfiguration {
     /// - Returns: A new configuration with the merged headers.
     func headers(_ headers: [String: String]) -> IrisConfiguration {
         var config = self
-        config.defaultHeaders.merge(headers) { _, new in new }
+        config.defaultHeaders.mergeHTTPHeaderFields(headers)
         return config
     }
     
@@ -183,7 +205,7 @@ public extension IrisConfiguration {
     ///
     /// - Parameter plugin: The plugin to add.
     /// - Returns: A new configuration with the added plugin.
-    func plugin(_ plugin: PluginType) -> IrisConfiguration {
+    func plugin(_ plugin: any PluginType) -> IrisConfiguration {
         var config = self
         config.plugins.append(plugin)
         return config
@@ -193,7 +215,7 @@ public extension IrisConfiguration {
     ///
     /// - Parameter plugins: The plugins to add.
     /// - Returns: A new configuration with the added plugins.
-    func plugins(_ plugins: [PluginType]) -> IrisConfiguration {
+    func plugins(_ plugins: [any PluginType]) -> IrisConfiguration {
         var config = self
         config.plugins.append(contentsOf: plugins)
         return config
@@ -217,6 +239,40 @@ public extension IrisConfiguration {
         var config = self
         config.stubBehavior = behavior
         return config
+    }
+
+    /// Sets the default retry policy.
+    ///
+    /// - Parameter policy: The retry policy. `count` of `0` disables retry.
+    /// - Returns: A new configuration with the updated retry policy.
+    func retry(_ policy: RetryPolicy) -> IrisConfiguration {
+        var config = self
+        config.retryPolicy = policy
+        return config
+    }
+
+    /// Sets a default retry policy for live requests.
+    ///
+    /// - Parameters:
+    ///   - count: Extra retries after the first attempt. `0` disables retry.
+    ///   - interval: Base delay in seconds before the first retry. Default is `0.5`.
+    ///   - backoff: Delay growth. Default is exponential.
+    ///   - idempotentOnly: When `true`, POST / PATCH are not retried. Default is `true`.
+    /// - Returns: A new configuration with the updated retry policy.
+    func retry(
+        count: Int,
+        interval: TimeInterval = 0.5,
+        backoff: RetryPolicy.Backoff = .exponential,
+        idempotentOnly: Bool = true
+    ) -> IrisConfiguration {
+        retry(
+            RetryPolicy(
+                count: count,
+                interval: interval,
+                backoff: backoff,
+                idempotentOnly: idempotentOnly
+            )
+        )
     }
     
     /// Sets the JSON decoder.
@@ -246,7 +302,7 @@ public extension IrisConfiguration {
 ///
 /// Stub behavior determines when stubbed responses are returned during testing.
 /// Use this to simulate different network conditions.
-public enum StubBehavior {
+public enum StubBehavior: Sendable {
     
     /// Return a response immediately without any delay.
     case immediate

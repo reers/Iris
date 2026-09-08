@@ -18,8 +18,8 @@ Iris is a networking library built on top of [Alamofire](https://github.com/Alam
 - **Async/Await**: Modern Swift concurrency support out of the box
 - **Callbacks**: Thin `send` / `fetch` completion wrappers for existing callback call sites
 - **Progress**: Upload and download `Progress` as recipe handlers or `send { session in }` streams
-- **HTTP Streaming**: `stream()` with `onChunk` or `session.chunks`
-- **Configurable**: Global, service-scoped, and per-request configuration options
+- **HTTP Streaming**: `stream()` sidecars with a final response, or lazy terminal byte/string streams
+- **Configurable**: Shared or custom clients, service-scoped defaults, and per-request overrides
 - **Plugin System**: Intercept and modify requests/responses
 - **Stubbing**: First-class support for testing with stubbed responses
 - **Full-Featured**: Supports uploads, downloads, multipart form data, and more
@@ -181,6 +181,14 @@ Call.data()
     }
     .send { _ in }
 
+for try await text in Call<Empty>()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .streamStrings() {
+    print(text)
+}
+
 // Concurrency sidecars — live session does not escape the closure
 let media = try await Call<Media>()
     .path("/v1/media")
@@ -194,17 +202,54 @@ let media = try await Call<Media>()
 
 ## Request Configuration
 
-Defaults can be set at three levels. A later level wins on the same key:
+Calls run on an `IrisClient`. By default, every call uses `IrisClient.shared`,
+so existing `Iris.configure(...)` and `Call().send()` code keeps working. Use a
+custom client when a group of requests needs its own Alamofire session, pinning,
+plugins, coders, or stub defaults.
 
-```text
-per-request  >  IrisService (business module)  >  Iris.configure (global)  >  built-in default
+```swift
+// Global default, compatible with existing code.
+Call<User>().path("/me").send()
+
+// A small number of special requests can pick a client directly.
+Call<User>().client(secureClient).path("/me").send()
+
+// Recommended for a business module: bind the client to a service factory.
+userService.call(User.self).path("/me").send()
 ```
 
-Headers are merged in that order (request keys overwrite service keys, which overwrite global keys). Timeout and base URL are replaced, not merged.
+Within a client, defaults can be set at three levels. A later level wins on the same key:
+
+```text
+per-request  >  IrisService (business module)  >  IrisClient / Iris.configure  >  built-in default
+```
+
+Headers are merged in that order (request keys overwrite service keys, which overwrite client/global keys). Timeout and base URL are replaced, not merged.
+
+### Clients
+
+`IrisClient` is the execution context. It owns an `IrisConfiguration`, including
+the Alamofire `Session`, plugins, coders, and stub behavior.
+
+```swift
+let secureClient = IrisClient(
+    configuration: IrisConfiguration()
+        .baseURL("https://secure.example.com")
+        .header("Accept", "application/json")
+        .plugin(AuthPlugin())
+        .session(pinnedSession)
+)
+
+let user = try await Call<User>()
+    .client(secureClient)
+    .path("/me")
+    .fetch()
+```
 
 ### Global defaults
 
-Call `Iris.configure` once at app launch. Every `Call` that does not set its own value uses this:
+Call `Iris.configure` once at app launch. It configures `IrisClient.shared`.
+Every `Call` that does not set its own client or value uses this:
 
 ```swift
 Iris.configure(
@@ -232,11 +277,18 @@ try await Call<User>()
 
 ### Service-scoped defaults (business modules)
 
-Use `IrisService` when a domain has its own host, headers, or timeout — payment, IM, a BFF — sitting between global config and a single request.
+Use `IrisService` when a domain has its own host, headers, or timeout — payment, IM, a BFF — sitting between client/global config and a single request. Attach a client when that domain should use an isolated networking stack.
 
 ```swift
 enum PaymentAPI {
+    static let client = IrisClient(
+        configuration: IrisConfiguration()
+            .plugin(PaymentAuthPlugin())
+            .session(paymentPinnedSession)
+    )
+
     static let service = IrisService(
+        client: client,
         baseURL: "https://pay.example.com",
         headers: ["X-Business": "payment"],
         timeout: 15
@@ -268,11 +320,11 @@ let user = try await Call<User>()
     .path("/users/me")
     .fetch()
 
-// Payment host + X-Business; timeout 15s.
+// Payment client + payment host + X-Business; timeout 15s.
 let order = try await PaymentAPI.order(id: "123").fetch()
 ```
 
-`service.call(Model.self)` copies the service onto the `Call`. Other chain methods (`.path`, `.body`, `.validateSuccessCodes()`, …) are unchanged.
+`service.call(Model.self)` copies the service and its client onto the `Call`. Other chain methods (`.path`, `.body`, `.validateSuccessCodes()`, …) are unchanged.
 
 ### Per-request overrides
 
@@ -389,6 +441,8 @@ Progress and body chunks are **sidecars**: they do not change `send()`’s retur
 
 Both styles share one probe. `onComplete` and plugins still run once at the end.
 
+Sidecar streams are **live-only**: values emitted before a stream is created are not replayed. Access `session.uploadProgress`, `session.downloadProgress`, or `session.chunks` at the start of the `send` body to observe the full sequence, and await the returned `Response` (or `session.value`) for the terminal result. Each delivered `Progress` is an immutable snapshot taken when the value was emitted.
+
 #### Handler (GCD)
 
 For call sites that cannot be `async` (UIKit actions, existing completion-style managers). Closures default to the main queue.
@@ -428,6 +482,43 @@ Call.data()
 Progress uses Foundation `Progress`. When `Content-Length` is missing, `fractionCompleted` may stay `0`.
 
 `stream()` applies to data tasks only — not file upload or file download. Mark the recipe with `stream()` so chunks are delivered; `Empty` discards the concatenated body, `Data` / `String` keep it as the raw model, other `Decodable` types JSON-decode the concatenation.
+
+#### Terminal streams
+
+Use `streamBytes()` / `streamStrings()` when you want Alamofire-style streaming
+without accumulating the full body or returning a final `Response`. These methods
+are terminal APIs: they return an `AsyncThrowingStream` directly.
+
+Creating the sequence does not start the request. The request starts when the
+sequence is first iterated, matching Iris’s normal “build first, execute later”
+model.
+
+```swift
+let stream = Call<Empty>()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .streamBytes()
+
+// No network request has started yet.
+
+for try await chunk in stream {
+    print(String(data: chunk, encoding: .utf8) ?? "")
+}
+
+for try await text in Call<Empty>()
+    .path("/v1/ai/complete")
+    .method(.post)
+    .body(["prompt": "hi"])
+    .streamStrings() {
+    print(text)
+}
+```
+
+Terminal streams still apply request preparation, `willSend`, validation, and
+transport errors. Cancelling the consuming task cancels the underlying request.
+They do not parse lines or Server-Sent Events; use a protocol-specific parser on
+top if you need SSE events.
 
 #### AsyncStream (Swift concurrency)
 
@@ -583,6 +674,8 @@ class LoggingPlugin: PluginType {
     }
 }
 ```
+
+`TargetType.baseURL` is `URL?`: it is `nil` when the request uses an absolute `path` and no base URL is configured. Prefer `target.fullURL` when you need the resolved request URL — it returns absolute paths as-is and resolves relative paths against the base URL.
 
 ### Common Plugin Use Cases
 

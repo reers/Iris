@@ -37,13 +37,16 @@ import Alamofire
 ///     .upload(multipart: formData)
 ///     .send()
 /// ```
-public struct MultipartFormData: Hashable {
+/// `@unchecked Sendable` is valid because `FileManager` and `InputStream` are
+/// only read when the request is materialized on Alamofire's session queue.
+/// The value is a request recipe, not shared mutable state.
+public struct MultipartFormData: Hashable, @unchecked Sendable {
 
     /// Method to provide the form data.
     ///
     /// This enum represents the different ways data can be provided for a
     /// multipart form body part.
-    public enum FormDataProvider: Hashable {
+    public enum FormDataProvider: Hashable, @unchecked Sendable {
         
         /// Data from memory.
         ///
@@ -107,7 +110,7 @@ extension MultipartFormData: ExpressibleByArrayLiteral {
 ///
 /// Each body part represents either a form field or a file to upload.
 /// The `provider` determines how the data is supplied (from memory, file, or stream).
-public struct MultipartFormBodyPart: Hashable {
+public struct MultipartFormBodyPart: Hashable, Sendable {
 
     /// Creates a new body part.
     ///
