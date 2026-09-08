@@ -117,6 +117,98 @@ final class LiveRequestTests: XCTestCase {
         XCTAssertEqual(sessionChunks.values.reduce(into: Data()) { $0.append($1) }, payload)
         XCTAssertEqual(response.model, payload)
     }
+
+    func testStreamBytesYieldsDataChunks() async throws {
+        let payload = Data("hello-stream".utf8)
+        stubBody(payload, chunkSize: 3, chunkInterval: 0.01)
+        
+        var chunks: [Data] = []
+        for try await chunk in Call<Empty>()
+            .path("/v1/stream-bytes")
+            .streamBytes() {
+            chunks.append(chunk)
+        }
+        
+        XCTAssertGreaterThan(chunks.count, 1)
+        XCTAssertEqual(chunks.reduce(into: Data()) { $0.append($1) }, payload)
+    }
+
+    func testStreamStringsYieldsStringChunks() async throws {
+        let payload = Data("hello-stream".utf8)
+        stubBody(payload, chunkSize: 3, chunkInterval: 0.01)
+        
+        var chunks: [String] = []
+        for try await chunk in Call<Empty>()
+            .path("/v1/stream-strings")
+            .streamStrings() {
+            chunks.append(chunk)
+            }
+        
+        XCTAssertGreaterThan(chunks.count, 1)
+        XCTAssertEqual(chunks.joined(), "hello-stream")
+    }
+
+    func testStreamBytesValidatesStatusCodes() async {
+        stubBody(Data("server unavailable".utf8), statusCode: 503)
+        
+        do {
+            for try await _ in Call<Empty>()
+                .path("/v1/stream-503")
+                .validateSuccessCodes()
+                .streamBytes() {}
+            XCTFail("Expected status code failure")
+        } catch let IrisError.statusCode(response) {
+            XCTAssertEqual(response.statusCode, 503)
+        } catch {
+            XCTFail("Expected statusCode, got \(error)")
+        }
+    }
+
+    func testStreamBytesRunsPrepareBeforeWillSend() async throws {
+        let plugin = TestingPlugin()
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://api.example.com")
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+        stubBody(Data("prepared".utf8), chunkSize: 4, chunkInterval: 0.01)
+        
+        for try await _ in Call<Empty>()
+            .path("/v1/stream-prepared")
+            .streamBytes() {}
+        
+        XCTAssertEqual(plugin.prepareCalledCount, 1)
+        XCTAssertEqual(plugin.willSendCalledCount, 1)
+        XCTAssertTrue(plugin.didPrepare)
+    }
+
+    func testCancellingStreamBytesCancelsUnderlyingRequest() async {
+        let didStartUnderlyingRequest = expectation(description: "Underlying stream should start")
+        let didCancelUnderlyingRequest = expectation(description: "Underlying stream should be cancelled")
+        StubURLProtocol.responseDelay = 5
+        StubURLProtocol.onStartLoading = {
+            didStartUnderlyingRequest.fulfill()
+        }
+        StubURLProtocol.onStopLoading = {
+            didCancelUnderlyingRequest.fulfill()
+        }
+        stubBody(Data("slow stream".utf8))
+        
+        let task = _Concurrency.Task {
+            do {
+                for try await _ in Call<Empty>()
+                    .path("/v1/slow-stream")
+                    .streamBytes() {}
+            } catch {
+                // Cancellation may surface through the stream.
+            }
+        }
+        
+        await fulfillment(of: [didStartUnderlyingRequest], timeout: 1)
+        task.cancel()
+        await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
+    }
     
     func testCancellingSendScopeCancelsUnderlyingRequest() async {
         let didStartUnderlyingRequest = expectation(description: "Underlying request should start")

@@ -835,6 +835,26 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     ) async throws -> Response<ResponseType> {
         try await Iris.send(self, body)
     }
+
+    /// Streams response body bytes without accumulating them into a final `Response`.
+    ///
+    /// This is a terminal API, similar to Alamofire's `responseStream`. Cancelling
+    /// the consuming task cancels the underlying request.
+    ///
+    /// - Returns: An async sequence of raw `Data` chunks.
+    public func streamBytes() -> AsyncThrowingStream<Data, Error> {
+        Iris.streamBytes(self)
+    }
+
+    /// Streams response body text chunks without accumulating them into a final `Response`.
+    ///
+    /// This is a terminal API, similar to Alamofire's `responseStreamString`.
+    /// It does not parse lines or Server-Sent Events.
+    ///
+    /// - Returns: An async sequence of `String` chunks.
+    public func streamStrings() -> AsyncThrowingStream<String, Error> {
+        Iris.streamStrings(self)
+    }
     
     /// Sends the request and delivers the result to a completion handler.
     ///

@@ -95,6 +95,48 @@ private final class StreamAccumulation: @unchecked Sendable {
     }
 }
 
+/// Resumes a terminal stream continuation once.
+private final class TerminalStreamCompletion: @unchecked Sendable {
+    private let lock: os_unfair_lock_t
+    private var didFinish = false
+    private var didYieldChunk = false
+
+    init() {
+        lock = .allocate(capacity: 1)
+        lock.initialize(to: os_unfair_lock_s())
+    }
+
+    deinit {
+        lock.deinitialize(count: 1)
+        lock.deallocate()
+    }
+
+    func finish(_ continuation: CheckedContinuation<Void, any Error>, throwing error: (any Error)? = nil) {
+        os_unfair_lock_lock(lock)
+        let alreadyFinished = didFinish
+        didFinish = true
+        os_unfair_lock_unlock(lock)
+        guard !alreadyFinished else { return }
+        if let error {
+            continuation.resume(throwing: error)
+        } else {
+            continuation.resume()
+        }
+    }
+
+    var hasYieldedChunks: Bool {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+        return didYieldChunk
+    }
+
+    func markYieldedChunk() {
+        os_unfair_lock_lock(lock)
+        didYieldChunk = true
+        os_unfair_lock_unlock(lock)
+    }
+}
+
 /// Network-layer outcome plus session metrics. Plugins still see only `result`.
 ///
 /// `@unchecked Sendable` is valid because `URLSessionTaskMetrics` is an
@@ -201,8 +243,146 @@ public struct Iris {
     public static func fetch<Model: Decodable & Sendable>(_ request: Call<Model>) async throws -> Model {
         try await request.resolvedClient.fetch(request)
     }
+
+    /// Streams response body bytes without accumulating them into a final response.
+    ///
+    /// This is a terminal API, similar to Alamofire's `responseStream`.
+    public static func streamBytes<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<Data, Error> {
+        request.resolvedClient.streamBytes(request)
+    }
+
+    static func streamBytes<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        using client: IrisClient
+    ) -> AsyncThrowingStream<Data, Error> {
+        makeByteTerminalStream(request, using: client)
+    }
+
+    /// Streams response body text chunks without accumulating them into a final response.
+    ///
+    /// This is a terminal API, similar to Alamofire's `responseStreamString`.
+    public static func streamStrings<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<String, Error> {
+        request.resolvedClient.streamStrings(request)
+    }
+
+    static func streamStrings<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        using client: IrisClient
+    ) -> AsyncThrowingStream<String, Error> {
+        makeStringTerminalStream(request, using: client)
+    }
     
     // MARK: - Private Methods
+
+    private static func makeByteTerminalStream<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        using client: IrisClient
+    ) -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            let cancellationToken = AlamofireRequestCancellationToken()
+            let streamTask = Task {
+                await runByteTerminalStream(
+                    request,
+                    using: client,
+                    cancellationToken: cancellationToken,
+                    continuation: continuation
+                )
+            }
+            continuation.onTermination = { @Sendable _ in
+                streamTask.cancel()
+                cancellationToken.cancel()
+            }
+        }
+    }
+
+    private static func makeStringTerminalStream<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        using client: IrisClient
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let cancellationToken = AlamofireRequestCancellationToken()
+            let streamTask = Task {
+                await runStringTerminalStream(
+                    request,
+                    using: client,
+                    cancellationToken: cancellationToken,
+                    continuation: continuation
+                )
+            }
+            continuation.onTermination = { @Sendable _ in
+                streamTask.cancel()
+                cancellationToken.cancel()
+            }
+        }
+    }
+
+    private static func runByteTerminalStream<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        using client: IrisClient,
+        cancellationToken: AlamofireRequestCancellationToken,
+        continuation: AsyncThrowingStream<Data, Error>.Continuation
+    ) async {
+        do {
+            let configuration = client.configuration
+            let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
+            if let stubBehavior {
+                try await performStubTerminalStream(
+                    request,
+                    behavior: stubBehavior,
+                    configuration: configuration,
+                    yield: { continuation.yield($0) }
+                )
+                continuation.finish()
+                return
+            }
+
+            try await performLiveByteTerminalStream(
+                request,
+                configuration: configuration,
+                cancellationToken: cancellationToken,
+                continuation: continuation
+            )
+            continuation.finish()
+        } catch {
+            continuation.finish(throwing: error)
+        }
+    }
+
+    private static func runStringTerminalStream<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        using client: IrisClient,
+        cancellationToken: AlamofireRequestCancellationToken,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async {
+        do {
+            let configuration = client.configuration
+            let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
+            if let stubBehavior {
+                try await performStubTerminalStream(
+                    request,
+                    behavior: stubBehavior,
+                    configuration: configuration,
+                    yield: { data in
+                        if let string = String(data: data, encoding: .utf8) {
+                            continuation.yield(string)
+                        }
+                    }
+                )
+                continuation.finish()
+                return
+            }
+
+            try await performLiveStringTerminalStream(
+                request,
+                configuration: configuration,
+                cancellationToken: cancellationToken,
+                continuation: continuation
+            )
+            continuation.finish()
+        } catch {
+            continuation.finish(throwing: error)
+        }
+    }
     
     /// Stub or live request. Shared by `send()` and `send { session in }` so the
     /// session path can start this work in a sibling task without changing
@@ -396,6 +576,254 @@ public struct Iris {
             prepared = try await plugin.prepare(prepared, target: request)
         }
         return prepared
+    }
+
+    private static func performLiveByteTerminalStream<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        configuration: IrisConfiguration,
+        cancellationToken: AlamofireRequestCancellationToken,
+        continuation: AsyncThrowingStream<Data, Error>.Continuation
+    ) async throws {
+        var requestWithResolvedRetry = request
+        requestWithResolvedRetry.retryPolicy = requestWithResolvedRetry.retryPolicy(over: configuration)
+        let resolvedRequest = requestWithResolvedRetry
+        let urlRequest = try makeURLRequest(from: resolvedRequest, configuration: configuration)
+        let plugins = configuration.plugins
+        let streamState = TerminalStreamCompletion()
+        let interceptor = IrisCallInterceptor(
+            prepare: { @Sendable urlRequest in
+                try await prepare(urlRequest, target: resolvedRequest, plugins: plugins)
+            },
+            retryPolicy: resolvedRequest.retryPolicy,
+            streamHasDeliveredChunks: { streamState.hasYieldedChunks }
+        )
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (requestCompletion: CheckedContinuation<Void, any Error>) in
+                let completion = streamState
+                let validationCodes = RetryPolicy.acceptableStatusCodes(
+                    for: resolvedRequest.validationType,
+                    policy: resolvedRequest.retryPolicy
+                )
+                let streamRequest = configuration.session.requestQueue.sync {
+                    var streamRequest = configuration.session.streamRequest(
+                        urlRequest,
+                        automaticallyCancelOnStreamError: false,
+                        interceptor: interceptor
+                    )
+                    if let validationCodes {
+                        streamRequest = streamRequest.validate(statusCode: validationCodes)
+                    }
+                    configureWillSend(streamRequest, interceptor: interceptor, request: resolvedRequest, plugins: plugins)
+                    return streamRequest
+                }
+                cancellationToken.setRequest(streamRequest)
+
+                streamRequest.responseStream(on: resolvedRequest.chunkQueue) { stream in
+                    switch stream.event {
+                    case .stream(.success(let data)):
+                        streamState.markYieldedChunk()
+                        continuation.yield(data)
+                    case .complete(let streamCompletion):
+                        let delivery = terminalDelivery(
+                            data: Data(),
+                            request: streamCompletion.request,
+                            response: streamCompletion.response,
+                            error: streamCompletion.error,
+                            metrics: streamRequest.metrics,
+                            validation: resolvedRequest.validationType
+                        )
+                        completeTerminalStream(
+                            delivery,
+                            request: resolvedRequest,
+                            plugins: plugins,
+                            completion: completion,
+                            continuation: requestCompletion
+                        )
+                    }
+                }
+            }
+        } onCancel: {
+            cancellationToken.cancel()
+        }
+    }
+
+    private static func performLiveStringTerminalStream<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        configuration: IrisConfiguration,
+        cancellationToken: AlamofireRequestCancellationToken,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async throws {
+        var requestWithResolvedRetry = request
+        requestWithResolvedRetry.retryPolicy = requestWithResolvedRetry.retryPolicy(over: configuration)
+        let resolvedRequest = requestWithResolvedRetry
+        let urlRequest = try makeURLRequest(from: resolvedRequest, configuration: configuration)
+        let plugins = configuration.plugins
+        let streamState = TerminalStreamCompletion()
+        let interceptor = IrisCallInterceptor(
+            prepare: { @Sendable urlRequest in
+                try await prepare(urlRequest, target: resolvedRequest, plugins: plugins)
+            },
+            retryPolicy: resolvedRequest.retryPolicy,
+            streamHasDeliveredChunks: { streamState.hasYieldedChunks }
+        )
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (requestCompletion: CheckedContinuation<Void, any Error>) in
+                let completion = streamState
+                let validationCodes = RetryPolicy.acceptableStatusCodes(
+                    for: resolvedRequest.validationType,
+                    policy: resolvedRequest.retryPolicy
+                )
+                let streamRequest = configuration.session.requestQueue.sync {
+                    var streamRequest = configuration.session.streamRequest(
+                        urlRequest,
+                        automaticallyCancelOnStreamError: false,
+                        interceptor: interceptor
+                    )
+                    if let validationCodes {
+                        streamRequest = streamRequest.validate(statusCode: validationCodes)
+                    }
+                    configureWillSend(streamRequest, interceptor: interceptor, request: resolvedRequest, plugins: plugins)
+                    return streamRequest
+                }
+                cancellationToken.setRequest(streamRequest)
+
+                streamRequest.responseStreamString(on: resolvedRequest.chunkQueue) { stream in
+                    switch stream.event {
+                    case .stream(.success(let string)):
+                        streamState.markYieldedChunk()
+                        continuation.yield(string)
+                    case .complete(let streamCompletion):
+                        let delivery = terminalDelivery(
+                            data: Data(),
+                            request: streamCompletion.request,
+                            response: streamCompletion.response,
+                            error: streamCompletion.error,
+                            metrics: streamRequest.metrics,
+                            validation: resolvedRequest.validationType
+                        )
+                        completeTerminalStream(
+                            delivery,
+                            request: resolvedRequest,
+                            plugins: plugins,
+                            completion: completion,
+                            continuation: requestCompletion
+                        )
+                    }
+                }
+            }
+        } onCancel: {
+            cancellationToken.cancel()
+        }
+    }
+
+    private static func performStubTerminalStream<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        behavior: StubBehavior,
+        configuration: IrisConfiguration,
+        yield: @escaping @Sendable (Data) -> Void
+    ) async throws {
+        switch behavior {
+        case .immediate:
+            break
+        case .delayed(let interval):
+            try await _Concurrency.Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+        }
+
+        let stubRequest: URLRequest?
+        if let urlRequest = try? makeURLRequest(from: request, configuration: configuration) {
+            stubRequest = try await prepare(urlRequest, target: request, plugins: configuration.plugins)
+        } else {
+            stubRequest = nil
+        }
+        let callType = CallTypeWrapper(alamofireRequest: nil, urlRequest: stubRequest)
+        configuration.plugins.forEach { $0.willSend(callType, target: request) }
+
+        let result: Result<HTTPResponse, IrisError>
+        let stubData: Data
+        switch request.sampleResponseClosure() {
+        case .networkResponse(let statusCode, let data):
+            stubData = data
+            let rawResponse = HTTPResponse(statusCode: statusCode, data: data)
+            if request.validationType.statusCodes.isEmpty || request.validationType.statusCodes.contains(statusCode) {
+                result = .success(rawResponse)
+            } else {
+                result = .failure(.statusCode(rawResponse))
+            }
+        case .response(let response, let data):
+            stubData = data
+            let rawResponse = HTTPResponse(
+                statusCode: response.statusCode,
+                data: data,
+                request: nil,
+                response: response
+            )
+            if request.validationType.statusCodes.isEmpty || request.validationType.statusCodes.contains(response.statusCode) {
+                result = .success(rawResponse)
+            } else {
+                result = .failure(.statusCode(rawResponse))
+            }
+        case .networkError(let error):
+            stubData = Data()
+            result = .failure(.underlying(error, nil))
+        }
+
+        if case .success = result {
+            yield(stubData)
+        }
+
+        let processedResult = processTerminalResult(result, request: request, plugins: configuration.plugins)
+        if case .failure(let error) = processedResult {
+            throw error
+        }
+    }
+
+    private static func terminalDelivery(
+        data: Data,
+        request: URLRequest?,
+        response: HTTPURLResponse?,
+        error: (any Error)?,
+        metrics: URLSessionTaskMetrics?,
+        validation: ValidationType
+    ) -> NetworkDelivery {
+        let result = mapNetworkResult(
+            data: data,
+            request: request,
+            response: response,
+            error: error
+        )
+        let delivery = NetworkDelivery(result: result, metrics: metrics)
+        return RetryPolicy.restoreUserAcceptedStatus(delivery, validation: validation)
+    }
+
+    private static func completeTerminalStream<Model: Decodable & Sendable>(
+        _ delivery: NetworkDelivery,
+        request: Call<Model>,
+        plugins: [any PluginType],
+        completion: TerminalStreamCompletion,
+        continuation: CheckedContinuation<Void, any Error>
+    ) {
+        let processedResult = processTerminalResult(delivery.result, request: request, plugins: plugins)
+        switch processedResult {
+        case .success:
+            completion.finish(continuation)
+        case .failure(let error):
+            completion.finish(continuation, throwing: error)
+        }
+    }
+
+    private static func processTerminalResult<Model: Decodable & Sendable>(
+        _ result: Result<HTTPResponse, IrisError>,
+        request: Call<Model>,
+        plugins: [any PluginType]
+    ) -> Result<HTTPResponse, IrisError> {
+        plugins.forEach { $0.didReceive(result, target: request) }
+        var processedResult = result
+        for plugin in plugins {
+            processedResult = plugin.process(processedResult, target: request)
+        }
+        return processedResult
     }
 
     private static func notifyComplete<Model: Decodable & Sendable>(

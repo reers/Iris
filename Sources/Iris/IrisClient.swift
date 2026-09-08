@@ -68,4 +68,14 @@ public final class IrisClient: @unchecked Sendable {
         let response = try await send(request)
         return response.model
     }
+
+    /// Streams response body bytes using this client's configuration.
+    public func streamBytes<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<Data, Error> {
+        Iris.streamBytes(request.bound(to: self), using: self)
+    }
+
+    /// Streams response body text chunks using this client's configuration.
+    public func streamStrings<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<String, Error> {
+        Iris.streamStrings(request.bound(to: self), using: self)
+    }
 }

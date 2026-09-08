@@ -373,6 +373,26 @@ final class RetryTests: XCTestCase {
         XCTAssertEqual(attempts.value, 1)
     }
 
+    func testTerminalStreamDoesNotRetryAfterChunksArrive() async throws {
+        let attempts = SendableBox(0)
+        StubURLProtocol.bodyChunkSize = 3
+        stubSequential { attempt in
+            attempts.value = attempt
+            return (httpResponse(503), Data("partial".utf8))
+        }
+
+        var chunks: [Data] = []
+        for try await chunk in Call<Empty>()
+            .path("/retry-terminal-stream-chunks")
+            .retry(count: 2, interval: 0, backoff: .none)
+            .streamBytes() {
+            chunks.append(chunk)
+        }
+
+        XCTAssertEqual(chunks.reduce(into: Data()) { $0.append($1) }, Data("partial".utf8))
+        XCTAssertEqual(attempts.value, 1)
+    }
+
     // MARK: - Helpers
 
     private func stubSequential(
