@@ -244,18 +244,19 @@ public struct Iris {
         configuration: IrisConfiguration,
         startedAt: CFAbsoluteTime
     ) async throws -> Response<Model> {
-        var request = request
-        request.retryPolicy = request.retryPolicy(over: configuration)
-        let urlRequest = try makeURLRequest(from: request, configuration: configuration)
+        var requestWithResolvedRetry = request
+        requestWithResolvedRetry.retryPolicy = requestWithResolvedRetry.retryPolicy(over: configuration)
+        let resolvedRequest = requestWithResolvedRetry
+        let urlRequest = try makeURLRequest(from: resolvedRequest, configuration: configuration)
         
         // 4. Create interceptor (bridges Plugin system to Alamofire)
         // Capture plugins array to satisfy Sendable requirement
         let plugins = configuration.plugins
         let interceptor = IrisCallInterceptor(
             prepare: { @Sendable urlRequest in
-                plugins.reduce(urlRequest) { $1.prepare($0, target: request) }
+                try await prepare(urlRequest, target: resolvedRequest, plugins: plugins)
             },
-            retryPolicy: request.retryPolicy,
+            retryPolicy: resolvedRequest.retryPolicy,
             streamHasDeliveredChunks: { broadcaster.hasYieldedChunks }
         )
         
@@ -264,35 +265,35 @@ public struct Iris {
         let session = configuration.session
         let delivery: NetworkDelivery
         
-        switch request.task {
+        switch resolvedRequest.task {
         case .uploadFile(let fileURL):
-            delivery = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, session: session, request: resolvedRequest, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .uploadMultipartFormData(let formData):
-            delivery = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: resolvedRequest, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .uploadCompositeMultipartFormData(let formData, _):
-            delivery = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: resolvedRequest, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .downloadDestination(let destination):
-            delivery = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: resolvedRequest, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .downloadParameters(_, _, let destination):
-            delivery = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: resolvedRequest, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         default:
             // Data tasks only. File upload/download ignore `stream()`.
-            if request.isStream {
-                delivery = await performStream(urlRequest, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            if resolvedRequest.isStream {
+                delivery = await performStream(urlRequest, interceptor: interceptor, session: session, request: resolvedRequest, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             } else {
-                delivery = await performDataRequest(urlRequest, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+                delivery = await performDataRequest(urlRequest, interceptor: interceptor, session: session, request: resolvedRequest, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             }
         }
         
         // 6-8. Restore the user's success definition, then notify plugins,
         // process, and decode or throw.
-        let remapped = RetryPolicy.restoreUserAcceptedStatus(delivery, validation: request.validationType)
-        return try finish(remapped, request: request, configuration: configuration, startedAt: startedAt)
+        let remapped = RetryPolicy.restoreUserAcceptedStatus(delivery, validation: resolvedRequest.validationType)
+        return try finish(remapped, request: resolvedRequest, configuration: configuration, startedAt: startedAt)
     }
     
     /// Decodes the response data into the specified model type.
@@ -382,6 +383,19 @@ public struct Iris {
             )
             throw error
         }
+    }
+
+    /// Applies plugin request preparation in registration order.
+    private static func prepare<Model: Decodable & Sendable>(
+        _ urlRequest: URLRequest,
+        target request: Call<Model>,
+        plugins: [any PluginType]
+    ) async throws -> URLRequest {
+        var prepared = urlRequest
+        for plugin in plugins {
+            prepared = try await plugin.prepare(prepared, target: request)
+        }
+        return prepared
     }
 
     private static func notifyComplete<Model: Decodable & Sendable>(
@@ -850,7 +864,12 @@ public struct Iris {
             try await _Concurrency.Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
         
-        let stubRequest = try? makeURLRequest(from: request, configuration: configuration)
+        let stubRequest: URLRequest?
+        if let urlRequest = try? makeURLRequest(from: request, configuration: configuration) {
+            stubRequest = try await prepare(urlRequest, target: request, plugins: configuration.plugins)
+        } else {
+            stubRequest = nil
+        }
         let callType = CallTypeWrapper(alamofireRequest: nil, urlRequest: stubRequest)
         configuration.plugins.forEach { $0.willSend(callType, target: request) }
         

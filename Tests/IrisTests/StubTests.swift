@@ -519,6 +519,25 @@ final class StubTests: XCTestCase {
         XCTAssertEqual(plugin.didReceiveCalledCount, 1)
         XCTAssertEqual(plugin.processCalledCount, 1)
     }
+
+    func testPrepareRunsBeforeWillSendDuringStub() async throws {
+        let plugin = TestingPlugin()
+        
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://api.example.com")
+                .stub(.immediate)
+                .plugin(plugin)
+        )
+        
+        _ = try await Call<GitHubUser>()
+            .path("/users/prepared")
+            .stub(GitHubUser(login: "prepared", id: 1))
+            .send()
+        
+        XCTAssertEqual(plugin.prepareCalledCount, 1)
+        XCTAssertTrue(plugin.didPrepare)
+    }
     
     func testPluginCanModifyStubResponse() async throws {
         let plugin = ResponseModifyingPlugin(newStatusCode: 201)

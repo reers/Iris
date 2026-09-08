@@ -22,13 +22,13 @@ final class PluginTests: XCTestCase {
     
     // MARK: - Default Implementation Tests
     
-    func testEmptyPluginUsesDefaultImplementations() {
+    func testEmptyPluginUsesDefaultImplementations() async throws {
         let plugin = EmptyPlugin()
         let request = URLRequest(url: URL(string: "https://example.com")!)
         let target = Call<Empty>().path("/test")
         
         // prepare should return the same request
-        let preparedRequest = plugin.prepare(request, target: target)
+        let preparedRequest = try await plugin.prepare(request, target: target)
         XCTAssertEqual(preparedRequest.url, request.url)
         
         // willSend should not crash
@@ -203,6 +203,73 @@ final class PluginTests: XCTestCase {
             .send()
 
         XCTAssertEqual(authenticatedRequestURL.value?.absoluteString, "https://example.com/auth")
+    }
+
+    func testAsyncPrepareCanAwaitBeforeModifyingLiveRequest() async throws {
+        let capturedToken = SendableBox<String?>(nil)
+        let plugin = AsyncTokenPlugin(store: AsyncTokenStore(token: "fresh-token"))
+        StubURLProtocol.handler = { request in
+            capturedToken.value = request.value(forHTTPHeaderField: "Authorization")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://example.com")
+                .session(makeStubbedSession())
+                .plugin(plugin)
+        )
+
+        _ = try await Call<Empty>()
+            .path("/async-auth")
+            .send()
+
+        XCTAssertEqual(capturedToken.value, "Bearer fresh-token")
+    }
+
+    func testPrepareFailureFailsRequestBeforeNetworkStarts() async {
+        let didStart = SendableBox(false)
+        StubURLProtocol.onStartLoading = {
+            didStart.value = true
+        }
+        StubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("{}".utf8))
+        }
+        defer { StubURLProtocol.reset() }
+
+        Iris.configure(
+            IrisConfiguration()
+                .baseURL("https://example.com")
+                .session(makeStubbedSession())
+                .plugin(ThrowingPreparePlugin())
+        )
+
+        do {
+            _ = try await Call<Empty>()
+                .path("/prepare-error")
+                .send()
+            XCTFail("Expected prepare failure")
+        } catch let IrisError.underlying(error, response) {
+            XCTAssertNil(response)
+            XCTAssertTrue(String(describing: error).contains("PrepareFailure"))
+        } catch {
+            XCTFail("Expected underlying prepare failure, got \(error)")
+        }
+
+        XCTAssertFalse(didStart.value)
     }
 
     // MARK: - OrderTrackingPlugin Tests
@@ -523,5 +590,38 @@ private struct BasicAuthenticationPlugin: PluginType {
     func willSend(_ request: CallType, target: TargetType) {
         let authenticatedRequest = request.authenticate(username: username, password: password, persistence: .none)
         authenticatedRequestURL.value = authenticatedRequest.request?.url
+    }
+}
+
+private actor AsyncTokenStore {
+    private let token: String
+
+    init(token: String) {
+        self.token = token
+    }
+
+    func currentToken() -> String {
+        token
+    }
+}
+
+private struct AsyncTokenPlugin: PluginType {
+    let store: AsyncTokenStore
+
+    func prepare(_ request: URLRequest, target: TargetType) async throws -> URLRequest {
+        var request = request
+        let token = await store.currentToken()
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+}
+
+private enum PrepareFailure: Error {
+    case failed
+}
+
+private struct ThrowingPreparePlugin: PluginType {
+    func prepare(_ request: URLRequest, target: TargetType) async throws -> URLRequest {
+        throw PrepareFailure.failed
     }
 }

@@ -199,7 +199,7 @@ final class WillSendHook: @unchecked Sendable {
 final class IrisCallInterceptor: Alamofire.RequestInterceptor, Sendable {
     
     /// Closure to prepare the request (called during adapt).
-    let prepare: (@Sendable (URLRequest) -> URLRequest)?
+    let prepare: (@Sendable (URLRequest) async throws -> URLRequest)?
     
     /// Hook invoked just before the request is sent. Assigned after the
     /// Alamofire request exists so plugins can wrap the live request.
@@ -219,7 +219,7 @@ final class IrisCallInterceptor: Alamofire.RequestInterceptor, Sendable {
     ///   - retryPolicy: Retry policy for this call.
     ///   - streamHasDeliveredChunks: Returns whether a stream already yielded data.
     init(
-        prepare: (@Sendable (URLRequest) -> URLRequest)? = nil,
+        prepare: (@Sendable (URLRequest) async throws -> URLRequest)? = nil,
         willSendHook: WillSendHook = WillSendHook(),
         retryPolicy: RetryPolicy? = nil,
         streamHasDeliveredChunks: @escaping @Sendable () -> Bool = { false }
@@ -236,9 +236,21 @@ final class IrisCallInterceptor: Alamofire.RequestInterceptor, Sendable {
         for session: Alamofire.Session,
         completion: @escaping @Sendable (Result<URLRequest, any Error>) -> Void
     ) {
-        let request = prepare?(urlRequest) ?? urlRequest
-        willSendHook.call(request)
-        completion(.success(request))
+        guard let prepare else {
+            willSendHook.call(urlRequest)
+            completion(.success(urlRequest))
+            return
+        }
+
+        Task {
+            do {
+                let request = try await prepare(urlRequest)
+                willSendHook.call(request)
+                completion(.success(request))
+            } catch {
+                completion(.failure(error))
+            }
+        }
     }
 
     /// Retries according to the resolved `RetryPolicy`.

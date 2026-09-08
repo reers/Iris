@@ -46,13 +46,15 @@ public protocol PluginType: Sendable {
     /// Called to modify a request before sending.
     ///
     /// Use this method to add headers, modify the URL, or make other changes
-    /// to the request before it's sent.
+    /// to the request before it's sent. Implementations may await token stores,
+    /// keychain wrappers, or other asynchronous state before returning.
     ///
     /// - Parameters:
     ///   - request: The URL request that will be sent.
     ///   - target: The target type that generated this request.
     /// - Returns: The modified (or unmodified) URL request.
-    func prepare(_ request: URLRequest, target: TargetType) -> URLRequest
+    /// - Throws: Any error that should fail the request before it is sent.
+    func prepare(_ request: URLRequest, target: TargetType) async throws -> URLRequest
 
     /// Called immediately before a request is sent over the network (or stubbed).
     ///
@@ -91,7 +93,7 @@ public protocol PluginType: Sendable {
 public extension PluginType {
     
     /// Default implementation returns the request unchanged.
-    func prepare(_ request: URLRequest, target: TargetType) -> URLRequest { request }
+    func prepare(_ request: URLRequest, target: TargetType) async throws -> URLRequest { request }
     
     /// Default implementation does nothing.
     func willSend(_ request: CallType, target: TargetType) { }
