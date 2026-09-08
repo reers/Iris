@@ -59,8 +59,10 @@ public struct IrisConfiguration {
     
     /// The list of plugins to apply to all requests.
     ///
-    /// Plugins are called in order for request preparation and in reverse order
-    /// for response processing.
+    /// All plugin callbacks (`prepare`, `willSend`, `didReceive`, `process`)
+    /// are invoked in registration order. If you need wrapping (onion-style)
+    /// semantics, register the outermost plugin first and order the rest
+    /// accordingly.
     public var plugins: [PluginType]
     
     /// The Alamofire session used for network requests.
