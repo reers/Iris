@@ -24,7 +24,7 @@ import Foundation
 ///     cancellable.cancel()
 /// }
 /// ```
-public protocol Cancellable {
+public protocol Cancellable: Sendable {
 
     /// A Boolean value indicating whether the operation has been cancelled.
     var isCancelled: Bool { get }
@@ -42,7 +42,7 @@ public protocol Cancellable {
 ///
 /// This is useful when the actual cancellable isn't available at creation time
 /// but will be assigned later.
-internal class CancellableWrapper: Cancellable {
+internal final class CancellableWrapper: Cancellable, @unchecked Sendable {
     
     /// The wrapped cancellable object.
     internal var innerCancellable: Cancellable = SimpleCancellable()
@@ -62,7 +62,7 @@ internal class CancellableWrapper: Cancellable {
 ///
 /// This is used as a default implementation when no actual cancellation
 /// action is needed.
-internal class SimpleCancellable: Cancellable {
+internal final class SimpleCancellable: Cancellable, @unchecked Sendable {
     
     /// Whether this cancellable has been cancelled.
     var isCancelled = false

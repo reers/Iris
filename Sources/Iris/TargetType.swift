@@ -13,7 +13,7 @@ import Foundation
 /// `Call` is the primary public API for creating and sending requests. For
 /// larger apps with multiple business domains, prefer `IrisService` plus
 /// `Call` factories instead of defining Moya-style enum targets.
-public protocol TargetType {
+public protocol TargetType: Sendable {
 
     /// The target's base `URL`.
     ///

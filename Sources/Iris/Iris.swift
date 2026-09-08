@@ -9,7 +9,9 @@ import Foundation
 import Alamofire
 import os.lock
 
-private final class AlamofireRequestCancellationToken {
+/// `@unchecked Sendable` is valid because `request` and `isCancelled` are
+/// only accessed while `lock` is held.
+private final class AlamofireRequestCancellationToken: @unchecked Sendable {
     private let lock: os_unfair_lock_t
     private var request: Request?
     private var isCancelled = false
@@ -109,11 +111,11 @@ public struct Iris {
     /// - Parameter request: The `Call` object containing all configuration for the network call.
     /// - Returns: A `Response<Model>` containing the decoded model and raw response data.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
-    public static func send<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
+    public static func send<Model: Decodable & Sendable>(_ request: Call<Model>) async throws -> Response<Model> {
         try await request.resolvedClient.send(request)
     }
 
-    static func send<Model: Decodable>(_ request: Call<Model>, using client: IrisClient) async throws -> Response<Model> {
+    static func send<Model: Decodable & Sendable>(_ request: Call<Model>, using client: IrisClient) async throws -> Response<Model> {
         let broadcaster = EventBroadcaster(from: request)
         let cancellationToken = AlamofireRequestCancellationToken()
         return try await withTaskCancellationHandler {
@@ -133,16 +135,16 @@ public struct Iris {
     /// still fire on the same probe. After `body` returns, this awaits the
     /// network task and always returns `Response<Model>` — `body` only consumes
     /// sidecars.
-    static func send<Model: Decodable>(
+    static func send<Model: Decodable & Sendable>(
         _ request: Call<Model>,
-        _ body: (CallSession<Model>) async throws -> Void
+        _ body: @Sendable (CallSession<Model>) async throws -> Void
     ) async throws -> Response<Model> {
         try await request.resolvedClient.send(request, body)
     }
 
-    static func send<Model: Decodable>(
+    static func send<Model: Decodable & Sendable>(
         _ request: Call<Model>,
-        _ body: (CallSession<Model>) async throws -> Void,
+        _ body: @Sendable (CallSession<Model>) async throws -> Void,
         using client: IrisClient
     ) async throws -> Response<Model> {
         let broadcaster = EventBroadcaster(from: request)
@@ -182,7 +184,7 @@ public struct Iris {
     /// - Parameter request: The `Call` object containing all configuration for the network call.
     /// - Returns: The decoded model of type `Model`.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
-    public static func fetch<Model: Decodable>(_ request: Call<Model>) async throws -> Model {
+    public static func fetch<Model: Decodable & Sendable>(_ request: Call<Model>) async throws -> Model {
         try await request.resolvedClient.fetch(request)
     }
     
@@ -191,7 +193,7 @@ public struct Iris {
     /// Stub or live request. Shared by `send()` and `send { session in }` so the
     /// session path can start this work in a sibling task without changing
     /// plugin / sidecar / decode order.
-    private static func execute<Model: Decodable>(
+    private static func execute<Model: Decodable & Sendable>(
         _ request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -220,7 +222,7 @@ public struct Iris {
     /// - Parameter request: The `Call` object to execute.
     /// - Returns: A `Response<Model>` containing the decoded model.
     /// - Throws: `IrisError` if any step in the request lifecycle fails.
-    private static func performRequest<Model: Decodable>(
+    private static func performRequest<Model: Decodable & Sendable>(
         _ request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -282,7 +284,7 @@ public struct Iris {
     ///   - customDecoder: An optional custom JSON decoder. If nil, uses the global configuration decoder.
     /// - Returns: The decoded model.
     /// - Throws: `IrisError.objectMapping` if decoding fails.
-    private static func decodeModel<Model: Decodable>(
+    private static func decodeModel<Model: Decodable & Sendable>(
         _ type: Model.Type,
         from rawResponse: HTTPResponse,
         using customDecoder: JSONDecoder?,
@@ -301,7 +303,7 @@ public struct Iris {
     ///
     /// Both success and failure results pass through `didReceive` and `process`
     /// so plugins can log errors, hide activity indicators, or recover failures.
-    private static func finish<Model: Decodable>(
+    private static func finish<Model: Decodable & Sendable>(
         _ result: Result<HTTPResponse, IrisError>,
         request: Call<Model>,
         configuration: IrisConfiguration
@@ -404,7 +406,7 @@ public struct Iris {
     /// The closures feed `EventBroadcaster`, which multicasts to recipe handlers and
     /// `CallSession` streams. Always attached so `send { session in }` can observe
     /// progress even when the recipe has no `onUploadProgress` / `onDownloadProgress`.
-    private static func attachSidecars<Model: Decodable>(
+    private static func attachSidecars<Model: Decodable & Sendable>(
         _ afRequest: AFRequest,
         from request: Call<Model>,
         broadcaster: EventBroadcaster
@@ -455,7 +457,7 @@ public struct Iris {
         }
     }
     
-    private static func performDataResponseRequest<Model: Decodable>(
+    private static func performDataResponseRequest<Model: Decodable & Sendable>(
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -482,7 +484,7 @@ public struct Iris {
         }
     }
     
-    private static func performDownloadResponseRequest<Model: Decodable>(
+    private static func performDownloadResponseRequest<Model: Decodable & Sendable>(
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -509,13 +511,13 @@ public struct Iris {
         }
     }
     
-    private static func configureWillSend<Model: Decodable>(
+    private static func configureWillSend<Model: Decodable & Sendable>(
         _ afRequest: AFRequest,
         interceptor: IrisCallInterceptor,
         request: Call<Model>,
-        plugins: [PluginType]
+        plugins: [any PluginType]
     ) {
-        interceptor.willSend = { @Sendable [weak afRequest] urlRequest in
+        interceptor.willSendHook.set { @Sendable [weak afRequest] urlRequest in
             guard let afRequest else {
                 let callType = CallTypeWrapper(alamofireRequest: nil, urlRequest: urlRequest)
                 plugins.forEach { $0.willSend(callType, target: request) }
@@ -534,12 +536,12 @@ public struct Iris {
     /// `onComplete` still run once in `finish()`, same as a buffered data request.
     /// `automaticallyCancelOnStreamError` is false so transport errors still map through
     /// `mapNetworkResult` instead of cancelling the Alamofire request first.
-    private static func performStream<Model: Decodable>(
+    private static func performStream<Model: Decodable & Sendable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
-        plugins: [PluginType],
+        plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
@@ -621,7 +623,7 @@ public struct Iris {
     ///
     /// - Parameter request: The request to convert.
     /// - Returns: An `Endpoint` representing the request.
-    private static func createEndpoint<Model: Decodable>(from request: Call<Model>, configuration: IrisConfiguration) throws -> Endpoint {
+    private static func createEndpoint<Model: Decodable & Sendable>(from request: Call<Model>, configuration: IrisConfiguration) throws -> Endpoint {
         let url = try resolveURL(baseURL: request.configuredBaseURL(over: configuration), path: request.path).absoluteString
         
         return Endpoint(
@@ -633,7 +635,7 @@ public struct Iris {
         )
     }
     
-    private static func makeURLRequest<Model: Decodable>(
+    private static func makeURLRequest<Model: Decodable & Sendable>(
         from request: Call<Model>,
         configuration: IrisConfiguration
     ) throws -> URLRequest {
@@ -662,12 +664,12 @@ public struct Iris {
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
     /// - Returns: A result containing the response data or an `IrisError`.
-    private static func performDataRequest<Model: Decodable>(
+    private static func performDataRequest<Model: Decodable & Sendable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
-        plugins: [PluginType],
+        plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
@@ -688,13 +690,13 @@ public struct Iris {
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
     /// - Returns: A result containing the response data or an `IrisError`.
-    private static func performUploadFile<Model: Decodable>(
+    private static func performUploadFile<Model: Decodable & Sendable>(
         _ urlRequest: URLRequest,
         fileURL: URL,
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
-        plugins: [PluginType],
+        plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
@@ -715,13 +717,13 @@ public struct Iris {
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
     /// - Returns: A result containing the response data or an `IrisError`.
-    private static func performUploadMultipart<Model: Decodable>(
+    private static func performUploadMultipart<Model: Decodable & Sendable>(
         _ urlRequest: URLRequest,
         formData: MultipartFormData,
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
-        plugins: [PluginType],
+        plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
@@ -744,13 +746,13 @@ public struct Iris {
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
     /// - Returns: A result containing the response data or an `IrisError`.
-    private static func performDownload<Model: Decodable>(
+    private static func performDownload<Model: Decodable & Sendable>(
         _ urlRequest: URLRequest,
         destination: @escaping DownloadDestination,
         interceptor: IrisCallInterceptor,
         session: Session,
         request: Call<Model>,
-        plugins: [PluginType],
+        plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
     ) async -> Result<HTTPResponse, IrisError> {
@@ -774,7 +776,7 @@ public struct Iris {
     ///   - behavior: The stub behavior determining timing of the response.
     /// - Returns: A `Response<Model>` containing the decoded stub data.
     /// - Throws: `IrisError` if decoding the stub data fails.
-    private static func performStub<Model: Decodable>(
+    private static func performStub<Model: Decodable & Sendable>(
         _ request: Call<Model>,
         behavior: StubBehavior,
         broadcaster: EventBroadcaster,

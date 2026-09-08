@@ -14,7 +14,7 @@ import Foundation
 ///
 /// Use this plugin in tests to verify that plugins are called correctly
 /// at each stage of the request lifecycle.
-final class TestingPlugin: PluginType {
+final class TestingPlugin: PluginType, @unchecked Sendable {
     
     /// The last request and target passed to willSend.
     var request: (CallType, TargetType)?
@@ -91,7 +91,7 @@ final class TestingPlugin: PluginType {
 /// A plugin that tracks the order of method calls.
 ///
 /// Use this to verify that plugin methods are called in the expected order.
-final class OrderTrackingPlugin: PluginType {
+final class OrderTrackingPlugin: PluginType, @unchecked Sendable {
     
     /// The order in which methods were called.
     var callOrder: [String] = []
@@ -123,7 +123,7 @@ final class OrderTrackingPlugin: PluginType {
 // MARK: - HeaderModifyingPlugin
 
 /// A plugin that adds a custom header to requests.
-final class HeaderModifyingPlugin: PluginType {
+final class HeaderModifyingPlugin: PluginType, Sendable {
     
     /// The header key to add.
     let headerKey: String
@@ -151,7 +151,7 @@ final class HeaderModifyingPlugin: PluginType {
 // MARK: - ResponseModifyingPlugin
 
 /// A plugin that modifies the response status code.
-final class ResponseModifyingPlugin: PluginType {
+final class ResponseModifyingPlugin: PluginType, Sendable {
     
     /// The new status code to set.
     let newStatusCode: Int
@@ -180,7 +180,7 @@ final class ResponseModifyingPlugin: PluginType {
 // MARK: - ErrorInjectingPlugin
 
 /// A plugin that injects an error into all responses.
-final class ErrorInjectingPlugin: PluginType {
+final class ErrorInjectingPlugin: PluginType, Sendable {
     
     /// The error to inject.
     let error: IrisError
@@ -202,16 +202,16 @@ final class ErrorInjectingPlugin: PluginType {
 /// A plugin that tracks network activity changes.
 ///
 /// Use this to test that network activity indicators are properly shown/hidden.
-final class NetworkActivityPlugin: PluginType {
+final class NetworkActivityPlugin: PluginType, Sendable {
     
     /// The type of network activity change.
-    enum NetworkActivityChangeType {
+    enum NetworkActivityChangeType: Sendable {
         case began
         case ended
     }
     
     /// Closure type for network activity changes.
-    typealias NetworkActivityClosure = (_ change: NetworkActivityChangeType, _ target: TargetType) -> Void
+    typealias NetworkActivityClosure = @Sendable (_ change: NetworkActivityChangeType, _ target: TargetType) -> Void
     
     /// The closure called when network activity changes.
     let networkActivityClosure: NetworkActivityClosure
@@ -237,6 +237,6 @@ final class NetworkActivityPlugin: PluginType {
 /// An empty plugin that uses all default implementations.
 ///
 /// Use this to test that the default plugin implementations work correctly.
-final class EmptyPlugin: PluginType {
+final class EmptyPlugin: PluginType, Sendable {
     // Uses all default implementations
 }

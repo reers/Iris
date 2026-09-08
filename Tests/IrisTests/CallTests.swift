@@ -120,9 +120,9 @@ final class CallTests: XCTestCase {
     }
 
     func testServiceHeadersMergeBetweenGlobalAndRequestHeaders() async throws {
-        var capturedHeaders: [String: String] = [:]
+        let capturedHeaders = SendableBox<[String: String]>([:])
         StubURLProtocol.handler = { request in
-            capturedHeaders = request.allHTTPHeaderFields ?? [:]
+            capturedHeaders.value = request.allHTTPHeaderFields ?? [:]
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -157,10 +157,10 @@ final class CallTests: XCTestCase {
             ])
             .send()
         
-        XCTAssertEqual(capturedHeaders["X-Global"], "global")
-        XCTAssertEqual(capturedHeaders["X-Service"], "service")
-        XCTAssertEqual(capturedHeaders["X-Request"], "request")
-        XCTAssertEqual(capturedHeaders["X-Shared"], "request")
+        XCTAssertEqual(capturedHeaders.value["X-Global"], "global")
+        XCTAssertEqual(capturedHeaders.value["X-Service"], "service")
+        XCTAssertEqual(capturedHeaders.value["X-Request"], "request")
+        XCTAssertEqual(capturedHeaders.value["X-Shared"], "request")
     }
     
     func testRequestHeadersOverrideDefaultHeadersIgnoringCase() async throws {
@@ -469,9 +469,9 @@ final class CallTests: XCTestCase {
     }
     
     func testBodyDictionary() {
-        // Explicitly cast to [String: Any] to use the dictionary overload
+        // Explicitly cast to Parameters to use the dictionary overload
         // instead of the Encodable overload
-        let params: [String: Any] = ["name": "test"]
+        let params: Parameters = ["name": "test"]
         let request = Call<Empty>()
             .body(params)
         

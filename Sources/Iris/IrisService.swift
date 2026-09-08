@@ -12,7 +12,7 @@ import Foundation
 /// Use `IrisService` when a group of endpoints share defaults such as a
 /// `baseURL`, headers, or timeout. Attach a client when that group should use
 /// an isolated networking configuration.
-public struct IrisService {
+public struct IrisService: Sendable {
 
     /// The client used by calls created from this service.
     public var client: IrisClient?
@@ -65,7 +65,7 @@ public struct IrisService {
     ///
     /// - Parameter type: The expected decoded response type.
     /// - Returns: A call using this service's defaults.
-    public func call<Model: Decodable>(_ type: Model.Type = Model.self) -> Call<Model> {
+    public func call<Model: Decodable & Sendable>(_ type: Model.Type = Model.self) -> Call<Model> {
         var request = Call<Model>()
         request.service = self
         request.client = client

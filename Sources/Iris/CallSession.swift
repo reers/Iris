@@ -17,7 +17,8 @@ import os.lock
 ///
 /// Do not store this value. It exists so the live request does not leak out of
 /// the `send` closure as a second execution type.
-public struct CallSession<ResponseType: Decodable> {
+///
+public struct CallSession<ResponseType: Decodable & Sendable>: Sendable {
     
     private let valueTask: Task<Response<ResponseType>, Error>
     private let broadcaster: EventBroadcaster
@@ -90,15 +91,15 @@ final class EventBroadcaster: @unchecked Sendable {
     private var downloadSubscribers: [AsyncStream<Progress>.Continuation] = []
     private var chunkSubscribers: [AsyncStream<Data>.Continuation] = []
     
-    private let uploadHandler: ((Progress) -> Void)?
+    private let uploadHandler: (@Sendable (Progress) -> Void)?
     private let uploadQueue: DispatchQueue
-    private let downloadHandler: ((Progress) -> Void)?
+    private let downloadHandler: (@Sendable (Progress) -> Void)?
     private let downloadQueue: DispatchQueue
-    private let chunkHandler: ((Data) -> Void)?
+    private let chunkHandler: (@Sendable (Data) -> Void)?
     private let chunkQueue: DispatchQueue
     private let isStream: Bool
     
-    init<Model: Decodable>(from request: Call<Model>) {
+    init<Model: Decodable & Sendable>(from request: Call<Model>) {
         lock = .allocate(capacity: 1)
         lock.initialize(to: os_unfair_lock_s())
         uploadHandler = request.uploadProgressHandler
@@ -218,8 +219,8 @@ final class EventBroadcaster: @unchecked Sendable {
         return copy
     }
     
-    private func notify<Element>(
-        _ handler: ((Element) -> Void)?,
+    private func notify<Element: Sendable>(
+        _ handler: (@Sendable (Element) -> Void)?,
         queue: DispatchQueue,
         handlerOnQueue: Bool,
         value: Element
@@ -234,6 +235,6 @@ final class EventBroadcaster: @unchecked Sendable {
 }
 
 /// Schedules `work` on `queue` without blocking the caller.
-func invokeAsynchronously(_ queue: DispatchQueue, _ work: @escaping () -> Void) {
+func invokeAsynchronously(_ queue: DispatchQueue, _ work: @escaping @Sendable () -> Void) {
     queue.async(execute: work)
 }

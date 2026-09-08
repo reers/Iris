@@ -22,7 +22,7 @@ public typealias Image = NSImage
 ///
 /// `HTTPResponse` contains the HTTP status, raw body data, and request/response
 /// metadata before a typed model has been decoded.
-public struct HTTPResponse: CustomDebugStringConvertible {
+public struct HTTPResponse: CustomDebugStringConvertible, Sendable {
     
     /// The HTTP status code of the response.
     public let statusCode: Int
@@ -386,6 +386,8 @@ public struct Response<Model>: CustomDebugStringConvertible {
         try httpResponse.map(type, atKeyPath: keyPath, using: decoder, failsOnEmptyData: failsOnEmptyData)
     }
 }
+
+extension Response: Sendable where Model: Sendable {}
 
 // MARK: - Private Helpers
 

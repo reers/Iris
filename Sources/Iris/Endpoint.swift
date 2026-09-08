@@ -12,7 +12,7 @@ import Foundation
 ///
 /// Use these cases to define what should be returned when stubbing
 /// a network request for testing purposes.
-public enum EndpointSampleResponse {
+public enum EndpointSampleResponse: Sendable {
 
     /// The network returned a response, including status code and data.
     ///
@@ -49,7 +49,7 @@ public enum EndpointSampleResponse {
 open class Endpoint {
     
     /// A closure type that returns an `EndpointSampleResponse`.
-    public typealias SampleResponseClosure = () -> EndpointSampleResponse
+    public typealias SampleResponseClosure = @Sendable () -> EndpointSampleResponse
 
     /// A string representation of the URL for the request.
     public let url: String

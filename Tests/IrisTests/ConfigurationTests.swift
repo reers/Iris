@@ -273,7 +273,7 @@ final class ConfigurationTests: XCTestCase {
         let timeout: TimeInterval = 45
         let decoder = JSONDecoder()
         let encoder = JSONEncoder()
-        let plugins: [PluginType] = [TestingPlugin()]
+        let plugins: [any PluginType] = [TestingPlugin()]
         let session = Session()
         let stubBehavior = StubBehavior.immediate
         

@@ -23,9 +23,15 @@ import Foundation
 /// - Transforming response data
 /// - Injecting errors for testing
 ///
+/// Plugins are `Sendable` because they are stored on `IrisConfiguration` and
+/// invoked from Alamofire's request queue as well as Iris's async execution path.
+/// Prefer an immutable `struct` or `final class` with no shared mutable state.
+/// If a plugin must mutate, isolate that state with a lock and use
+/// `@unchecked Sendable`.
+///
 /// Example:
 /// ```swift
-/// class LoggingPlugin: PluginType {
+/// struct LoggingPlugin: PluginType {
 ///     func willSend(_ request: CallType, target: TargetType) {
 ///         print("Sending request to: \(target.path)")
 ///     }
@@ -35,7 +41,7 @@ import Foundation
 ///     }
 /// }
 /// ```
-public protocol PluginType {
+public protocol PluginType: Sendable {
     
     /// Called to modify a request before sending.
     ///
@@ -103,7 +109,7 @@ public extension PluginType {
 ///
 /// This protocol provides a way to access request information without
 /// exposing Alamofire's internal types to plugins.
-public protocol CallType {
+public protocol CallType: Sendable {
 
     // Note:
     //

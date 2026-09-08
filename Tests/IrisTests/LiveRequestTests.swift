@@ -59,7 +59,7 @@ final class LiveRequestTests: XCTestCase {
         let payload = Data(repeating: 0x62, count: 8)
         stubBody(payload, chunkSize: 2, chunkInterval: 0.01)
         
-        var fractions: [Double] = []
+        let fractions = SendableArray<Double>()
         let response = try await Call.data()
             .path("/v1/media")
             .send { session in
@@ -69,15 +69,15 @@ final class LiveRequestTests: XCTestCase {
             }
         
         XCTAssertEqual(response.model, payload)
-        XCTAssertFalse(fractions.isEmpty)
-        XCTAssertEqual(fractions.last, 1)
+        XCTAssertFalse(fractions.values.isEmpty)
+        XCTAssertEqual(fractions.values.last, 1)
     }
     
     func testStreamDeliversMultipleChunksThenDecodedValue() async throws {
         let payload = #"{"login":"octocat","id":1}"#.data(using: .utf8)!
         stubBody(payload, chunkSize: 8, chunkInterval: 0.01)
         
-        var chunks: [Data] = []
+        let chunks = SendableArray<Data>()
         let response = try await Call<GitHubUser>()
             .path("/users/octocat")
             .stream()
@@ -88,7 +88,7 @@ final class LiveRequestTests: XCTestCase {
             }
         
         XCTAssertGreaterThan(chunks.count, 1)
-        XCTAssertEqual(chunks.reduce(into: Data()) { $0.append($1) }, payload)
+        XCTAssertEqual(chunks.values.reduce(into: Data()) { $0.append($1) }, payload)
         XCTAssertEqual(response.model.login, "octocat")
         XCTAssertEqual(response.model.id, 1)
     }
@@ -98,7 +98,7 @@ final class LiveRequestTests: XCTestCase {
         stubBody(payload, chunkSize: 4, chunkInterval: 0.01)
         
         let handlerChunks = SendableArray<Data>()
-        var sessionChunks: [Data] = []
+        let sessionChunks = SendableArray<Data>()
         
         let response = try await Call.data()
             .path("/v1/ai")
@@ -112,9 +112,9 @@ final class LiveRequestTests: XCTestCase {
                 }
             }
         
-        XCTAssertEqual(handlerChunks.values, sessionChunks)
+        XCTAssertEqual(handlerChunks.values, sessionChunks.values)
         XCTAssertGreaterThan(sessionChunks.count, 1)
-        XCTAssertEqual(sessionChunks.reduce(into: Data()) { $0.append($1) }, payload)
+        XCTAssertEqual(sessionChunks.values.reduce(into: Data()) { $0.append($1) }, payload)
         XCTAssertEqual(response.model, payload)
     }
     
@@ -146,11 +146,12 @@ final class LiveRequestTests: XCTestCase {
     func testThrowingSendScopeCancelsUnderlyingRequest() async {
         struct BodyFailure: Error {}
 
-        let didStartUnderlyingRequest = expectation(description: "Underlying request should start")
         let didCancelUnderlyingRequest = expectation(description: "Underlying request should be cancelled")
+        let started = AsyncStream.makeStream(of: Void.self)
         StubURLProtocol.responseDelay = 5
         StubURLProtocol.onStartLoading = {
-            didStartUnderlyingRequest.fulfill()
+            started.continuation.yield(())
+            started.continuation.finish()
         }
         StubURLProtocol.onStopLoading = {
             didCancelUnderlyingRequest.fulfill()
@@ -162,7 +163,7 @@ final class LiveRequestTests: XCTestCase {
                 _ = try await Call<Empty>()
                     .path("/slow")
                     .send { _ in
-                        await fulfillment(of: [didStartUnderlyingRequest], timeout: 1)
+                        for await _ in started.stream { break }
                         throw BodyFailure()
                     }
                 XCTFail("Expected body failure")

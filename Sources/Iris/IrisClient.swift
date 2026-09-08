@@ -51,20 +51,20 @@ public final class IrisClient: @unchecked Sendable {
     }
 
     /// Sends a request using this client's configuration.
-    public func send<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
+    public func send<Model: Decodable & Sendable>(_ request: Call<Model>) async throws -> Response<Model> {
         try await Iris.send(request.bound(to: self), using: self)
     }
 
     /// Starts the request on this client, then runs `body` with a live session.
-    public func send<Model: Decodable>(
+    public func send<Model: Decodable & Sendable>(
         _ request: Call<Model>,
-        _ body: (CallSession<Model>) async throws -> Void
+        _ body: @Sendable (CallSession<Model>) async throws -> Void
     ) async throws -> Response<Model> {
         try await Iris.send(request.bound(to: self), body, using: self)
     }
 
     /// Sends a request using this client and returns only the decoded model.
-    public func fetch<Model: Decodable>(_ request: Call<Model>) async throws -> Model {
+    public func fetch<Model: Decodable & Sendable>(_ request: Call<Model>) async throws -> Model {
         let response = try await send(request)
         return response.model
     }

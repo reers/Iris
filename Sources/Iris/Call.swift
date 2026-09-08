@@ -19,6 +19,9 @@ private struct CallbackResultDelivery<Success, Failure: Error>: @unchecked Senda
 /// of a network request in a single, fluent chain. This eliminates the need for
 /// separate enum cases or scattered configuration.
 ///
+/// The decoded model must be `Sendable` so a `Call` can cross isolation
+/// domains into `send()` / `fetch()` and plugin callbacks.
+///
 /// Use a `Decodable` model for JSON, `Call.data()` for the raw body, or
 /// `Call.empty()` when the body is unused.
 ///
@@ -45,7 +48,7 @@ private struct CallbackResultDelivery<Success, Failure: Error>: @unchecked Senda
 /// // Execute requests
 /// let user = try await Call<User>.getUser(id: 123).fetch()
 /// ```
-public struct Call<ResponseType: Decodable>: TargetType {
+public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     
     // MARK: - TargetType Properties
     
@@ -144,20 +147,20 @@ public struct Call<ResponseType: Decodable>: TargetType {
     
     /// Upload progress sidecar. Does not start the request; pair with `send()` / `fetch()`.
     /// Invoked on `uploadProgressQueue`.
-    var uploadProgressHandler: ((Progress) -> Void)?
+    var uploadProgressHandler: (@Sendable (Progress) -> Void)?
     
     /// Queue for `uploadProgressHandler`. Defaults to the main queue.
     var uploadProgressQueue: DispatchQueue = .main
     
     /// Download progress sidecar. Does not start the request; pair with `send()` / `fetch()`.
     /// Invoked on `downloadProgressQueue`.
-    var downloadProgressHandler: ((Progress) -> Void)?
+    var downloadProgressHandler: (@Sendable (Progress) -> Void)?
     
     /// Queue for `downloadProgressHandler`. Defaults to the main queue.
     var downloadProgressQueue: DispatchQueue = .main
     
     /// Stream chunk sidecar. Invoked on `chunkQueue` for each body fragment when `isStream` is true.
-    var chunkHandler: ((Data) -> Void)?
+    var chunkHandler: (@Sendable (Data) -> Void)?
     
     /// Queue for `chunkHandler`. Defaults to the main queue.
     var chunkQueue: DispatchQueue = .main
@@ -279,7 +282,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter parameters: The query parameters.
     /// - Returns: A new call with URL-encoded query parameters.
-    public func query(_ parameters: [String: Any]) -> Call<ResponseType> {
+    public func query(_ parameters: Parameters) -> Call<ResponseType> {
         var request = self
         request.task = .requestParameters(parameters: parameters, encoding: URLEncoding.queryString)
         return request
@@ -289,7 +292,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter parameters: The body parameters.
     /// - Returns: A new call with JSON-encoded body.
-    public func body(_ parameters: [String: Any]) -> Call<ResponseType> {
+    public func body(_ parameters: Parameters) -> Call<ResponseType> {
         var request = self
         request.task = .requestParameters(parameters: parameters, encoding: JSONEncoding.default)
         return request
@@ -313,8 +316,8 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter builder: A closure that receives an `inout` dictionary to populate.
     /// - Returns: A new call with JSON-encoded body.
-    public func body(_ builder: (_ json: inout [String: Any]) -> Void) -> Call<ResponseType> {
-        var parameters: [String: Any] = [:]
+    public func body(_ builder: (_ json: inout Parameters) -> Void) -> Call<ResponseType> {
+        var parameters: Parameters = [:]
         builder(&parameters)
         return body(parameters)
     }
@@ -325,7 +328,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter encodable: The object to encode as JSON.
     /// - Returns: A new call with JSON-encoded body.
-    public func body<T: Encodable>(_ encodable: T) -> Call<ResponseType> {
+    public func body<T: Encodable & Sendable>(_ encodable: T) -> Call<ResponseType> {
         var request = self
         request.task = .requestJSONEncodable(encodable)
         return request
@@ -337,7 +340,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - encodable: The object to encode.
     ///   - encoder: The custom JSON encoder.
     /// - Returns: A new call with custom-encoded body.
-    public func body<T: Encodable>(_ encodable: T, encoder: JSONEncoder) -> Call<ResponseType> {
+    public func body<T: Encodable & Sendable>(_ encodable: T, encoder: JSONEncoder) -> Call<ResponseType> {
         var request = self
         request.task = .requestCustomJSONEncodable(encodable, encoder: encoder)
         return request
@@ -357,7 +360,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///
     /// - Parameter parameters: The form parameters.
     /// - Returns: A new call with form-encoded body.
-    public func formBody(_ parameters: [String: Any]) -> Call<ResponseType> {
+    public func formBody(_ parameters: Parameters) -> Call<ResponseType> {
         var request = self
         request.task = .requestParameters(parameters: parameters, encoding: URLEncoding.httpBody)
         return request
@@ -371,9 +374,9 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - bodyEncoding: The encoding for body parameters. Default is JSON.
     /// - Returns: A new call with composite parameters.
     public func composite(
-        query: [String: Any],
-        body: [String: Any],
-        bodyEncoding: ParameterEncoding = JSONEncoding.default
+        query: Parameters,
+        body: Parameters,
+        bodyEncoding: any ParameterEncoding = JSONEncoding.default
     ) -> Call<ResponseType> {
         var request = self
         request.task = .requestCompositeParameters(
@@ -424,7 +427,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A new call configured for multipart upload with query parameters.
     public func upload(
         multipart formData: MultipartFormData,
-        query: [String: Any]
+        query: Parameters
     ) -> Call<ResponseType> {
         var request = self
         request.task = .uploadCompositeMultipartFormData(formData, urlParameters: query)
@@ -451,8 +454,8 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - destination: A closure that determines where to save the downloaded file.
     /// - Returns: A new call configured for file download with parameters.
     public func download(
-        parameters: [String: Any],
-        encoding: ParameterEncoding = URLEncoding.default,
+        parameters: Parameters,
+        encoding: any ParameterEncoding = URLEncoding.default,
         to destination: @escaping DownloadDestination
     ) -> Call<ResponseType> {
         var request = self
@@ -539,7 +542,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A new call with the progress handler.
     public func onUploadProgress(
         on queue: DispatchQueue = .main,
-        _ handler: @escaping (Progress) -> Void
+        _ handler: @escaping @Sendable (Progress) -> Void
     ) -> Call<ResponseType> {
         var request = self
         request.uploadProgressHandler = handler
@@ -559,7 +562,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A new call with the progress handler.
     public func onDownloadProgress(
         on queue: DispatchQueue = .main,
-        _ handler: @escaping (Progress) -> Void
+        _ handler: @escaping @Sendable (Progress) -> Void
     ) -> Call<ResponseType> {
         var request = self
         request.downloadProgressHandler = handler
@@ -580,7 +583,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: A new call with the chunk handler.
     public func onChunk(
         on queue: DispatchQueue = .main,
-        _ handler: @escaping (Data) -> Void
+        _ handler: @escaping @Sendable (Data) -> Void
     ) -> Call<ResponseType> {
         var request = self
         request.chunkHandler = handler
@@ -690,7 +693,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - model: The model to encode as stub data.
     ///   - encoder: The encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
     /// - Returns: A new call with the encoded stub data.
-    public func stub<T: Encodable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) -> Call<ResponseType> {
+    public func stub<T: Encodable & Sendable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) -> Call<ResponseType> {
         do {
             return try stubEncoded(model, encoder: encoder)
         } catch {
@@ -708,7 +711,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     ///   - encoder: The encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
     /// - Returns: A new call with the encoded stub data.
     /// - Throws: Any error thrown by `JSONEncoder`.
-    public func stubEncoded<T: Encodable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) throws -> Call<ResponseType> {
+    public func stubEncoded<T: Encodable & Sendable>(_ model: T, encoder: JSONEncoder = Iris.configuration.jsonEncoder) throws -> Call<ResponseType> {
         stub(try encoder.encode(model))
     }
     
@@ -781,7 +784,7 @@ public struct Call<ResponseType: Decodable>: TargetType {
     /// - Returns: The decoded `Response`.
     /// - Throws: `IrisError` from the request, or errors thrown by `body`.
     public func send(
-        _ body: (CallSession<ResponseType>) async throws -> Void
+        _ body: @Sendable (CallSession<ResponseType>) async throws -> Void
     ) async throws -> Response<ResponseType> {
         try await Iris.send(self, body)
     }
@@ -893,7 +896,7 @@ public extension Call where ResponseType == String {
 /// Use `Call<Data>` when you need the raw bytes.
 
 /// A type that accepts any JSON response without parsing.
-public struct Empty: Decodable {
+public struct Empty: Decodable, Sendable {
     
     /// Creates an empty instance.
     public init() {}

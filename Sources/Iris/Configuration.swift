@@ -27,7 +27,7 @@ import Alamofire
 ///         .plugin(AuthPlugin())
 /// )
 /// ```
-public struct IrisConfiguration {
+public struct IrisConfiguration: Sendable {
     
     /// The base URL for all requests.
     ///
@@ -62,7 +62,7 @@ public struct IrisConfiguration {
     /// are invoked in registration order. If you need wrapping (onion-style)
     /// semantics, register the outermost plugin first and order the rest
     /// accordingly.
-    public var plugins: [PluginType]
+    public var plugins: [any PluginType]
     
     /// The Alamofire session used for network requests.
     ///
@@ -92,7 +92,7 @@ public struct IrisConfiguration {
         defaultTimeout: TimeInterval = 30,
         jsonDecoder: JSONDecoder = JSONDecoder(),
         jsonEncoder: JSONEncoder = JSONEncoder(),
-        plugins: [PluginType] = [],
+        plugins: [any PluginType] = [],
         session: Session = Session.default,
         stubBehavior: StubBehavior? = nil
     ) {
@@ -196,7 +196,7 @@ public extension IrisConfiguration {
     ///
     /// - Parameter plugin: The plugin to add.
     /// - Returns: A new configuration with the added plugin.
-    func plugin(_ plugin: PluginType) -> IrisConfiguration {
+    func plugin(_ plugin: any PluginType) -> IrisConfiguration {
         var config = self
         config.plugins.append(plugin)
         return config
@@ -206,7 +206,7 @@ public extension IrisConfiguration {
     ///
     /// - Parameter plugins: The plugins to add.
     /// - Returns: A new configuration with the added plugins.
-    func plugins(_ plugins: [PluginType]) -> IrisConfiguration {
+    func plugins(_ plugins: [any PluginType]) -> IrisConfiguration {
         var config = self
         config.plugins.append(contentsOf: plugins)
         return config
@@ -259,7 +259,7 @@ public extension IrisConfiguration {
 ///
 /// Stub behavior determines when stubbed responses are returned during testing.
 /// Use this to simulate different network conditions.
-public enum StubBehavior {
+public enum StubBehavior: Sendable {
     
     /// Return a response immediately without any delay.
     case immediate

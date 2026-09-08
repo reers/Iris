@@ -69,7 +69,7 @@ enum HTTPBinAPI {
     /// Tests multipart form upload.
     static func uploadMultipart(
         parts: [MultipartFormBodyPart],
-        urlParameters: [String: Any]? = nil
+        urlParameters: Parameters? = nil
     ) -> Call<HTTPBinResponse> {
         var request = Call<HTTPBinResponse>()
             .baseURL(baseURL)
@@ -89,7 +89,7 @@ enum HTTPBinAPI {
     /// Tests validated multipart upload.
     static func validatedUpload(
         parts: [MultipartFormBodyPart],
-        urlParameters: [String: Any]? = nil,
+        urlParameters: Parameters? = nil,
         codes: [Int]
     ) -> Call<HTTPBinResponse> {
         var request = uploadMultipart(parts: parts, urlParameters: urlParameters)
@@ -338,17 +338,91 @@ final class SendableArray<T>: @unchecked Sendable {
 
 // MARK: - URLProtocol Stub
 
+/// Lock-protected stub configuration. URLProtocol callbacks may run off the
+/// test thread, so every field is accessed only while `lock` is held.
+private final class StubURLProtocolConfiguration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+    private var _responseDelay: TimeInterval = 0
+    private var _bodyChunkSize: Int = 0
+    private var _bodyChunkInterval: TimeInterval = 0
+    private var _onStartLoading: (@Sendable () -> Void)?
+    private var _onStopLoading: (@Sendable () -> Void)?
+
+    var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { withLock { _handler } }
+        set { withLock { _handler = newValue } }
+    }
+    var responseDelay: TimeInterval {
+        get { withLock { _responseDelay } }
+        set { withLock { _responseDelay = newValue } }
+    }
+    var bodyChunkSize: Int {
+        get { withLock { _bodyChunkSize } }
+        set { withLock { _bodyChunkSize = newValue } }
+    }
+    var bodyChunkInterval: TimeInterval {
+        get { withLock { _bodyChunkInterval } }
+        set { withLock { _bodyChunkInterval = newValue } }
+    }
+    var onStartLoading: (@Sendable () -> Void)? {
+        get { withLock { _onStartLoading } }
+        set { withLock { _onStartLoading = newValue } }
+    }
+    var onStopLoading: (@Sendable () -> Void)? {
+        get { withLock { _onStopLoading } }
+        set { withLock { _onStopLoading = newValue } }
+    }
+
+    func reset() {
+        withLock {
+            _handler = nil
+            _responseDelay = 0
+            _bodyChunkSize = 0
+            _bodyChunkInterval = 0
+            _onStartLoading = nil
+            _onStopLoading = nil
+        }
+    }
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+}
+
 /// Intercepts URLSession traffic so tests can simulate HTTP and transport failures.
 final class StubURLProtocol: URLProtocol {
     
-    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
-    static var responseDelay: TimeInterval = 0
+    private static let configuration = StubURLProtocolConfiguration()
+
+    static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { configuration.handler }
+        set { configuration.handler = newValue }
+    }
+    static var responseDelay: TimeInterval {
+        get { configuration.responseDelay }
+        set { configuration.responseDelay = newValue }
+    }
     /// When greater than 0, the body is delivered as successive `didLoad` callbacks.
-    static var bodyChunkSize: Int = 0
+    static var bodyChunkSize: Int {
+        get { configuration.bodyChunkSize }
+        set { configuration.bodyChunkSize = newValue }
+    }
     /// Pause between body chunks so Alamofire can observe progress and stream events.
-    static var bodyChunkInterval: TimeInterval = 0
-    static var onStartLoading: (() -> Void)?
-    static var onStopLoading: (() -> Void)?
+    static var bodyChunkInterval: TimeInterval {
+        get { configuration.bodyChunkInterval }
+        set { configuration.bodyChunkInterval = newValue }
+    }
+    static var onStartLoading: (@Sendable () -> Void)? {
+        get { configuration.onStartLoading }
+        set { configuration.onStartLoading = newValue }
+    }
+    static var onStopLoading: (@Sendable () -> Void)? {
+        get { configuration.onStopLoading }
+        set { configuration.onStopLoading = newValue }
+    }
     
     private var workItem: DispatchWorkItem?
     
@@ -384,12 +458,7 @@ final class StubURLProtocol: URLProtocol {
     }
     
     static func reset() {
-        handler = nil
-        responseDelay = 0
-        bodyChunkSize = 0
-        bodyChunkInterval = 0
-        onStartLoading = nil
-        onStopLoading = nil
+        configuration.reset()
     }
     
     private func deliver(response: HTTPURLResponse, data: Data) {

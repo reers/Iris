@@ -28,7 +28,7 @@ import Foundation
 /// // Multipart form data
 /// .uploadMultipartFormData(formData)
 /// ```
-public enum CallTask {
+public enum CallTask: Sendable {
 
     /// A request with no additional data.
     ///
@@ -45,14 +45,14 @@ public enum CallTask {
     /// The encodable object will be serialized to JSON using `IrisConfiguration.jsonEncoder`.
     ///
     /// - Parameter encodable: The object to encode as the request body.
-    case requestJSONEncodable(Encodable)
+    case requestJSONEncodable(any Encodable & Sendable)
 
     /// A request with the body set with an `Encodable` type using a custom encoder.
     ///
     /// - Parameters:
     ///   - encodable: The object to encode as the request body.
     ///   - encoder: The custom `JSONEncoder` to use.
-    case requestCustomJSONEncodable(Encodable, encoder: JSONEncoder)
+    case requestCustomJSONEncodable(any Encodable & Sendable, encoder: JSONEncoder)
 
     /// A request with the body set with encoded parameters.
     ///
@@ -61,14 +61,14 @@ public enum CallTask {
     /// - Parameters:
     ///   - parameters: The parameters dictionary.
     ///   - encoding: The parameter encoding strategy (e.g., `URLEncoding`, `JSONEncoding`).
-    case requestParameters(parameters: [String: Any], encoding: ParameterEncoding)
+    case requestParameters(parameters: Parameters, encoding: any ParameterEncoding)
 
     /// A request with raw data body combined with URL query parameters.
     ///
     /// - Parameters:
     ///   - bodyData: The raw data to send as the request body.
     ///   - urlParameters: Parameters to append to the URL as query string.
-    case requestCompositeData(bodyData: Data, urlParameters: [String: Any])
+    case requestCompositeData(bodyData: Data, urlParameters: Parameters)
 
     /// A request with encoded body parameters combined with URL query parameters.
     ///
@@ -76,7 +76,7 @@ public enum CallTask {
     ///   - bodyParameters: Parameters for the request body.
     ///   - bodyEncoding: Encoding strategy for body parameters.
     ///   - urlParameters: Parameters to append to the URL as query string.
-    case requestCompositeParameters(bodyParameters: [String: Any], bodyEncoding: ParameterEncoding, urlParameters: [String: Any])
+    case requestCompositeParameters(bodyParameters: Parameters, bodyEncoding: any ParameterEncoding, urlParameters: Parameters)
 
     /// A file upload task.
     ///
@@ -97,7 +97,7 @@ public enum CallTask {
     /// - Parameters:
     ///   - formData: The multipart form data to upload.
     ///   - urlParameters: Parameters to append to the URL as query string.
-    case uploadCompositeMultipartFormData(MultipartFormData, urlParameters: [String: Any])
+    case uploadCompositeMultipartFormData(MultipartFormData, urlParameters: Parameters)
 
     /// A file download task to a destination.
     ///
@@ -112,5 +112,5 @@ public enum CallTask {
     ///   - parameters: Parameters to include in the download request.
     ///   - encoding: The parameter encoding strategy.
     ///   - destination: A closure that determines where to save the downloaded file.
-    case downloadParameters(parameters: [String: Any], encoding: ParameterEncoding, destination: DownloadDestination)
+    case downloadParameters(parameters: Parameters, encoding: any ParameterEncoding, destination: DownloadDestination)
 }

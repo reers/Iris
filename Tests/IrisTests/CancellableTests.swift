@@ -76,24 +76,24 @@ final class CancellableTests: XCTestCase {
     // MARK: - CancellableToken Tests
     
     func testCancellableTokenWithAction() {
-        var actionCalled = false
+        let actionCalled = SendableBox(false)
         let token = CancellableToken {
-            actionCalled = true
+            actionCalled.value = true
         }
         
         XCTAssertFalse(token.isCancelled)
-        XCTAssertFalse(actionCalled)
+        XCTAssertFalse(actionCalled.value)
         
         token.cancel()
         
         XCTAssertTrue(token.isCancelled)
-        XCTAssertTrue(actionCalled)
+        XCTAssertTrue(actionCalled.value)
     }
     
     func testCancellableTokenMultipleCancels() {
-        var cancelCount = 0
+        let cancelCount = SendableBox(0)
         let token = CancellableToken {
-            cancelCount += 1
+            cancelCount.value += 1
         }
         
         token.cancel()
@@ -101,7 +101,7 @@ final class CancellableTests: XCTestCase {
         token.cancel()
         
         // Action should only be called once
-        XCTAssertEqual(cancelCount, 1)
+        XCTAssertEqual(cancelCount.value, 1)
         XCTAssertTrue(token.isCancelled)
     }
     
@@ -136,9 +136,9 @@ final class CancellableTests: XCTestCase {
     // MARK: - Thread Safety Tests
     
     func testCancellableTokenThreadSafety() {
-        var cancelCount = 0
+        let cancelCount = SendableBox(0)
         let token = CancellableToken {
-            cancelCount += 1
+            cancelCount.value += 1
         }
         
         let expectation = XCTestExpectation(description: "Thread safety test")
@@ -155,7 +155,7 @@ final class CancellableTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
         
         // Action should only be called once due to thread safety
-        XCTAssertEqual(cancelCount, 1)
+        XCTAssertEqual(cancelCount.value, 1)
         XCTAssertTrue(token.isCancelled)
     }
 }

@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import os.lock
 @_exported import Alamofire
 
 // MARK: - Public Type Aliases
@@ -34,6 +35,9 @@ public typealias RequestMultipartFormData = Alamofire.MultipartFormData
 
 /// Download destination closure type.
 public typealias DownloadDestination = Alamofire.DownloadRequest.Destination
+
+/// Request parameters dictionary. Matches Alamofire so values can cross isolation domains.
+public typealias Parameters = Alamofire.Parameters
 
 /// Request interceptor type.
 public typealias RequestInterceptor = Alamofire.RequestInterceptor
@@ -100,7 +104,7 @@ internal extension URLRequest {
     ///   - encoder: The JSON encoder to use. Defaults to `Iris.configuration.jsonEncoder`.
     /// - Returns: The request with the encoded body.
     /// - Throws: `IrisError.encodableMapping` if encoding fails.
-    func encoded(encodable: Encodable, encoder: JSONEncoder = Iris.configuration.jsonEncoder) throws -> URLRequest {
+    func encoded(encodable: any Encodable & Sendable, encoder: JSONEncoder = Iris.configuration.jsonEncoder) throws -> URLRequest {
         do {
             let encodableWrapper = AnyEncodable(encodable)
             let data = try encoder.encode(encodableWrapper)
@@ -124,7 +128,7 @@ internal extension URLRequest {
     ///   - parameterEncoding: The encoding strategy.
     /// - Returns: The request with encoded parameters.
     /// - Throws: `IrisError.parameterEncoding` if encoding fails.
-    func encoded(parameters: [String: Any], parameterEncoding: ParameterEncoding) throws -> URLRequest {
+    func encoded(parameters: Parameters, parameterEncoding: any ParameterEncoding) throws -> URLRequest {
         do {
             return try parameterEncoding.encode(self, with: parameters)
         } catch {
@@ -138,11 +142,13 @@ internal extension URLRequest {
 /// Type-erased wrapper for Encodable types.
 ///
 /// This allows encoding any Encodable value without knowing its concrete type.
-private struct AnyEncodable: Encodable {
-    private let _encode: (Encoder) throws -> Void
+private struct AnyEncodable: Encodable, Sendable {
+    private let _encode: @Sendable (Encoder) throws -> Void
     
-    init(_ encodable: Encodable) {
-        _encode = encodable.encode
+    init(_ encodable: any Encodable & Sendable) {
+        _encode = { encoder in
+            try encodable.encode(to: encoder)
+        }
     }
     
     func encode(to encoder: Encoder) throws {
@@ -156,10 +162,10 @@ private struct AnyEncodable: Encodable {
 ///
 /// `CancellableToken` wraps either a custom cancel action or an Alamofire request,
 /// providing a unified interface for cancellation.
-public final class CancellableToken: Cancellable, CustomDebugStringConvertible {
+public final class CancellableToken: Cancellable, CustomDebugStringConvertible, @unchecked Sendable {
     
     /// The action to perform when cancelled.
-    let cancelAction: () -> Void
+    let cancelAction: @Sendable () -> Void
     
     /// The associated Alamofire request, if any.
     let afRequest: AFRequest?
@@ -185,7 +191,7 @@ public final class CancellableToken: Cancellable, CustomDebugStringConvertible {
     /// Creates a token with a custom cancel action.
     ///
     /// - Parameter action: The action to perform when cancelled.
-    public init(action: @escaping () -> Void) {
+    public init(action: @escaping @Sendable () -> Void) {
         self.cancelAction = action
         self.afRequest = nil
     }
@@ -211,36 +217,73 @@ public final class CancellableToken: Cancellable, CustomDebugStringConvertible {
 
 // MARK: - IrisCallInterceptor
 
+/// Lock-protected `willSend` hook attached after the Alamofire request exists.
+///
+/// `@unchecked Sendable` is valid because `handler` is only read or written
+/// while `lock` is held.
+final class WillSendHook: @unchecked Sendable {
+    private let lock: os_unfair_lock_t
+    private var handler: (@Sendable (URLRequest) -> Void)?
+
+    init() {
+        lock = .allocate(capacity: 1)
+        lock.initialize(to: os_unfair_lock_s())
+    }
+
+    deinit {
+        lock.deinitialize(count: 1)
+        lock.deallocate()
+    }
+
+    func set(_ handler: @escaping @Sendable (URLRequest) -> Void) {
+        os_unfair_lock_lock(lock)
+        self.handler = handler
+        os_unfair_lock_unlock(lock)
+    }
+
+    func call(_ request: URLRequest) {
+        os_unfair_lock_lock(lock)
+        let handler = self.handler
+        os_unfair_lock_unlock(lock)
+        handler?(request)
+    }
+}
+
 /// An interceptor that bridges the Plugin system to Alamofire.
 ///
 /// This interceptor calls the prepare and willSend plugin methods at the
-/// appropriate points in the request lifecycle.
-final class IrisCallInterceptor: Alamofire.RequestInterceptor, @unchecked Sendable {
-    // Note: @unchecked Sendable is safe here because:
-    // 1. Properties are set once at initialization and never mutated after
-    // 2. The closures are only called from Alamofire's internal synchronization
-    // TODO: Consider migrating to actor-based approach in future Swift 6 migration
+/// appropriate points in the request lifecycle. It is `Sendable` because both
+/// stored properties are immutable and themselves `Sendable`.
+final class IrisCallInterceptor: Alamofire.RequestInterceptor, Sendable {
     
     /// Closure to prepare the request (called during adapt).
     let prepare: (@Sendable (URLRequest) -> URLRequest)?
     
-    /// Closure called just before the request is sent.
-    var willSend: (@Sendable (URLRequest) -> Void)?
+    /// Hook invoked just before the request is sent. Assigned after the
+    /// Alamofire request exists so plugins can wrap the live request.
+    let willSendHook: WillSendHook
 
     /// Creates a new interceptor.
     ///
     /// - Parameters:
     ///   - prepare: Closure to modify the request.
-    ///   - willSend: Closure called before sending.
-    init(prepare: (@Sendable (URLRequest) -> URLRequest)? = nil, willSend: (@Sendable (URLRequest) -> Void)? = nil) {
+    ///   - willSendHook: Hook called before sending.
+    init(
+        prepare: (@Sendable (URLRequest) -> URLRequest)? = nil,
+        willSendHook: WillSendHook = WillSendHook()
+    ) {
         self.prepare = prepare
-        self.willSend = willSend
+        self.willSendHook = willSendHook
     }
 
     /// Adapts the request using the prepare closure.
-    func adapt(_ urlRequest: URLRequest, for session: Alamofire.Session, completion: @escaping (Result<URLRequest, Error>) -> Void) {
+    func adapt(
+        _ urlRequest: URLRequest,
+        for session: Alamofire.Session,
+        completion: @escaping @Sendable (Result<URLRequest, any Error>) -> Void
+    ) {
         let request = prepare?(urlRequest) ?? urlRequest
-        willSend?(request)
+        willSendHook.call(request)
         completion(.success(request))
     }
 }

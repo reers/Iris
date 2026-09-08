@@ -384,7 +384,7 @@ final class StubTests: XCTestCase {
     }
     
     func testSendScopeProgressThenValue() async throws {
-        var fractions: [Double] = []
+        let fractions = SendableArray<Double>()
         
         // Delayed stub so the body subscribes before stub sidecars fire;
         // sidecar streams are live-only and drop values emitted before subscription.
@@ -398,12 +398,12 @@ final class StubTests: XCTestCase {
                 }
             }
         
-        XCTAssertEqual(fractions, [1])
+        XCTAssertEqual(fractions.values, [1])
         XCTAssertEqual(response.model, Data([0x01]))
     }
     
     func testSendScopeProgressAlongsideValue() async throws {
-        var fractions: [Double] = []
+        let fractions = SendableArray<Double>()
         
         let response = try await Call.data()
             .path("/v1/media")
@@ -416,13 +416,13 @@ final class StubTests: XCTestCase {
                 }
             }
         
-        XCTAssertEqual(fractions, [1])
+        XCTAssertEqual(fractions.values, [1])
         XCTAssertEqual(response.model, Data([0x01]))
     }
     
     func testSendScopeChunksThenValue() async throws {
         let payload = #"{"token":"hi"}"#.data(using: .utf8)!
-        var chunks: [Data] = []
+        let chunks = SendableArray<Data>()
         
         let response = try await Call.data()
             .path("/v1/ai")
@@ -435,13 +435,13 @@ final class StubTests: XCTestCase {
                 }
             }
         
-        XCTAssertEqual(chunks, [payload])
+        XCTAssertEqual(chunks.values, [payload])
         XCTAssertEqual(response.model, payload)
     }
     
     func testSendScopeAndHandlerBothReceiveProgress() async throws {
         let handlerCount = SendableBox(0)
-        var streamCount = 0
+        let streamCount = SendableBox(0)
         
         _ = try await Call.data()
             .path("/v1/media")
@@ -452,12 +452,12 @@ final class StubTests: XCTestCase {
             }
             .send { session in
                 for await _ in session.uploadProgress {
-                    streamCount += 1
+                    streamCount.value += 1
                 }
             }
         
         XCTAssertEqual(handlerCount.value, 1)
-        XCTAssertEqual(streamCount, 1)
+        XCTAssertEqual(streamCount.value, 1)
     }
     
     func testSendScopeEmptyBodyStillReturnsResponse() async throws {

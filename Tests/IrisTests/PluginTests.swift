@@ -287,31 +287,31 @@ final class PluginTests: XCTestCase {
     // MARK: - NetworkActivityPlugin Tests
     
     func testNetworkActivityPluginBegan() {
-        var beganCalled = false
-        var receivedTarget: TargetType?
+        let beganCalled = SendableBox(false)
+        let receivedTarget = SendableBox<(any TargetType)?>(nil)
         
         let plugin = NetworkActivityPlugin { change, target in
             if change == .began {
-                beganCalled = true
-                receivedTarget = target
+                beganCalled.value = true
+                receivedTarget.value = target
             }
         }
         
         let target = Call<Empty>().path("/test")
         plugin.willSend(MockCallType(), target: target)
         
-        XCTAssertTrue(beganCalled)
-        XCTAssertNotNil(receivedTarget)
+        XCTAssertTrue(beganCalled.value)
+        XCTAssertNotNil(receivedTarget.value)
     }
     
     func testNetworkActivityPluginEnded() {
-        var endedCalled = false
-        var receivedTarget: TargetType?
+        let endedCalled = SendableBox(false)
+        let receivedTarget = SendableBox<(any TargetType)?>(nil)
         
         let plugin = NetworkActivityPlugin { change, target in
             if change == .ended {
-                endedCalled = true
-                receivedTarget = target
+                endedCalled.value = true
+                receivedTarget.value = target
             }
         }
         
@@ -319,8 +319,8 @@ final class PluginTests: XCTestCase {
         let response = HTTPResponse(statusCode: 200, data: Data())
         plugin.didReceive(.success(response), target: target)
         
-        XCTAssertTrue(endedCalled)
-        XCTAssertNotNil(receivedTarget)
+        XCTAssertTrue(endedCalled.value)
+        XCTAssertNotNil(receivedTarget.value)
     }
     
     // MARK: - Multiple Plugins Tests
@@ -501,7 +501,7 @@ private struct MockCallType: CallType {
         return self
     }
     
-    func cURLDescription(calling handler: @escaping (String) -> Void) -> MockCallType {
+    func cURLDescription(calling handler: @escaping @Sendable (String) -> Void) -> MockCallType {
         handler(request?.description ?? "")
         return self
     }
