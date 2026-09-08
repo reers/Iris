@@ -83,15 +83,29 @@ private final class StreamAccumulation: @unchecked Sendable {
     }
     
     func complete(
-        _ result: Result<HTTPResponse, IrisError>,
-        continuation: CheckedContinuation<Result<HTTPResponse, IrisError>, Never>
+        _ delivery: NetworkDelivery,
+        continuation: CheckedContinuation<NetworkDelivery, Never>
     ) {
         os_unfair_lock_lock(lock)
         let alreadyFinished = didFinish
         didFinish = true
         os_unfair_lock_unlock(lock)
         guard !alreadyFinished else { return }
-        continuation.resume(returning: result)
+        continuation.resume(returning: delivery)
+    }
+}
+
+/// Network-layer outcome plus session metrics. Plugins still see only `result`.
+///
+/// `@unchecked Sendable` is valid because `URLSessionTaskMetrics` is an
+/// immutable snapshot published after the task finishes.
+struct NetworkDelivery: @unchecked Sendable {
+    let result: Result<HTTPResponse, IrisError>
+    let metrics: URLSessionTaskMetrics?
+
+    init(result: Result<HTTPResponse, IrisError>, metrics: URLSessionTaskMetrics? = nil) {
+        self.result = result
+        self.metrics = metrics
     }
 }
 
@@ -202,11 +216,12 @@ public struct Iris {
         // Snapshot the client configuration once so a concurrent configure
         // cannot hand this request a mix of old and new values mid-flight.
         let configuration = client.configuration
+        let startedAt = CFAbsoluteTimeGetCurrent()
         let stubBehavior = request.stubBehavior ?? configuration.stubBehavior
         if let stubBehavior {
-            return try await performStub(request, behavior: stubBehavior, broadcaster: broadcaster, configuration: configuration)
+            return try await performStub(request, behavior: stubBehavior, broadcaster: broadcaster, configuration: configuration, startedAt: startedAt)
         }
-        return try await performRequest(request, broadcaster: broadcaster, cancellationToken: cancellationToken, configuration: configuration)
+        return try await performRequest(request, broadcaster: broadcaster, cancellationToken: cancellationToken, configuration: configuration, startedAt: startedAt)
     }
     
     /// Performs the actual network request using Alamofire.
@@ -226,7 +241,8 @@ public struct Iris {
         _ request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
-        configuration: IrisConfiguration
+        configuration: IrisConfiguration,
+        startedAt: CFAbsoluteTime
     ) async throws -> Response<Model> {
         let urlRequest = try makeURLRequest(from: request, configuration: configuration)
         
@@ -242,35 +258,35 @@ public struct Iris {
         // 5. Execute request based on task type. Network methods return Result
         // so failures still flow through plugin didReceive/process.
         let session = configuration.session
-        let networkResult: Result<HTTPResponse, IrisError>
+        let delivery: NetworkDelivery
         
         switch request.task {
         case .uploadFile(let fileURL):
-            networkResult = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performUploadFile(urlRequest, fileURL: fileURL, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .uploadMultipartFormData(let formData):
-            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .uploadCompositeMultipartFormData(let formData, _):
-            networkResult = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performUploadMultipart(urlRequest, formData: formData, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .downloadDestination(let destination):
-            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         case .downloadParameters(_, _, let destination):
-            networkResult = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+            delivery = await performDownload(urlRequest, destination: destination, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             
         default:
             // Data tasks only. File upload/download ignore `stream()`.
             if request.isStream {
-                networkResult = await performStream(urlRequest, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+                delivery = await performStream(urlRequest, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             } else {
-                networkResult = await performDataRequest(urlRequest, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
+                delivery = await performDataRequest(urlRequest, interceptor: interceptor, session: session, request: request, plugins: plugins, broadcaster: broadcaster, cancellationToken: cancellationToken)
             }
         }
         
         // 6-8. Notify plugins, process, then decode or throw
-        return try finish(networkResult, request: request, configuration: configuration)
+        return try finish(delivery, request: request, configuration: configuration, startedAt: startedAt)
     }
     
     /// Decodes the response data into the specified model type.
@@ -304,74 +320,80 @@ public struct Iris {
     /// Both success and failure results pass through `didReceive` and `process`
     /// so plugins can log errors, hide activity indicators, or recover failures.
     private static func finish<Model: Decodable & Sendable>(
-        _ result: Result<HTTPResponse, IrisError>,
+        _ delivery: NetworkDelivery,
         request: Call<Model>,
-        configuration: IrisConfiguration
+        configuration: IrisConfiguration,
+        startedAt: CFAbsoluteTime
     ) throws -> Response<Model> {
-        configuration.plugins.forEach { $0.didReceive(result, target: request) }
+        configuration.plugins.forEach { $0.didReceive(delivery.result, target: request) }
         
-        var processedResult = result
+        var processedResult = delivery.result
         for plugin in configuration.plugins {
             processedResult = plugin.process(processedResult, target: request)
         }
         
         switch processedResult {
         case .success(let rawResponse):
+            let decodeStartedAt = CFAbsoluteTimeGetCurrent()
             do {
                 let model = try decodeModel(Model.self, from: rawResponse, using: request.decoder, configuration: configuration)
-                
-                if let onCompleteHandler = request.onCompleteHandler {
-                    let afResponse = DataResponse<Model, AFError>(
-                        request: rawResponse.request,
-                        response: rawResponse.response,
-                        data: rawResponse.data,
-                        metrics: nil,
-                        serializationDuration: 0,
-                        result: .success(model)
-                    )
-                    onCompleteHandler(afResponse)
-                }
-                
-                return Response(model: model, httpResponse: rawResponse)
+                let response = Response(model: model, httpResponse: rawResponse)
+                notifyComplete(
+                    request,
+                    result: .success(response),
+                    startedAt: startedAt,
+                    serializationDuration: CFAbsoluteTimeGetCurrent() - decodeStartedAt,
+                    metrics: delivery.metrics
+                )
+                return response
+            } catch let error as IrisError {
+                notifyComplete(
+                    request,
+                    result: .failure(error),
+                    startedAt: startedAt,
+                    serializationDuration: CFAbsoluteTimeGetCurrent() - decodeStartedAt,
+                    metrics: delivery.metrics
+                )
+                throw error
             } catch {
-                if let onCompleteHandler = request.onCompleteHandler {
-                    let afError = AFError.responseSerializationFailed(reason: .decodingFailed(error: error))
-                    let afResponse = DataResponse<Model, AFError>(
-                        request: rawResponse.request,
-                        response: rawResponse.response,
-                        data: rawResponse.data,
-                        metrics: nil,
-                        serializationDuration: 0,
-                        result: .failure(afError)
-                    )
-                    onCompleteHandler(afResponse)
-                }
+                let irisError = IrisError.underlying(error, rawResponse)
+                notifyComplete(
+                    request,
+                    result: .failure(irisError),
+                    startedAt: startedAt,
+                    serializationDuration: CFAbsoluteTimeGetCurrent() - decodeStartedAt,
+                    metrics: delivery.metrics
+                )
                 throw error
             }
         case .failure(let error):
-            if let onCompleteHandler = request.onCompleteHandler {
-                let afError: AFError
-                switch error {
-                case .underlying(let underlying, _):
-                    afError = underlying as? AFError ?? AFError.sessionTaskFailed(error: underlying)
-                case .statusCode(let response):
-                    afError = AFError.responseValidationFailed(reason: .unacceptableStatusCode(code: response.statusCode))
-                default:
-                    afError = AFError.sessionTaskFailed(error: error)
-                }
-                let raw = error.response
-                let afResponse = DataResponse<Model, AFError>(
-                    request: raw?.request,
-                    response: raw?.response,
-                    data: raw?.data,
-                    metrics: nil,
-                    serializationDuration: 0,
-                    result: .failure(afError)
-                )
-                onCompleteHandler(afResponse)
-            }
+            notifyComplete(
+                request,
+                result: .failure(error),
+                startedAt: startedAt,
+                serializationDuration: 0,
+                metrics: delivery.metrics
+            )
             throw error
         }
+    }
+
+    private static func notifyComplete<Model: Decodable & Sendable>(
+        _ request: Call<Model>,
+        result: Result<Response<Model>, IrisError>,
+        startedAt: CFAbsoluteTime,
+        serializationDuration: TimeInterval,
+        metrics: URLSessionTaskMetrics?
+    ) {
+        guard let onCompleteHandler = request.onCompleteHandler else { return }
+        onCompleteHandler(
+            CompletionInfo(
+                result: result,
+                duration: CFAbsoluteTimeGetCurrent() - startedAt,
+                serializationDuration: serializationDuration,
+                metrics: metrics
+            )
+        )
     }
     
     /// Maps an Alamofire callback into a plugin-facing result.
@@ -419,42 +441,46 @@ public struct Iris {
         }
     }
     
-    private static func mapDataResponse(_ afResponse: AFDataResponse<Data>) -> Result<HTTPResponse, IrisError> {
+    private static func mapDataResponse(_ afResponse: AFDataResponse<Data>) -> NetworkDelivery {
+        let result: Result<HTTPResponse, IrisError>
         switch afResponse.result {
         case .success(let data):
-            return mapNetworkResult(
+            result = mapNetworkResult(
                 data: data,
                 request: afResponse.request,
                 response: afResponse.response,
                 error: nil
             )
         case .failure(let error):
-            return mapNetworkResult(
+            result = mapNetworkResult(
                 data: afResponse.data ?? Data(),
                 request: afResponse.request,
                 response: afResponse.response,
                 error: error
             )
         }
+        return NetworkDelivery(result: result, metrics: afResponse.metrics)
     }
     
-    private static func mapDownloadResponse(_ afResponse: DownloadResponse<Data, AFError>) -> Result<HTTPResponse, IrisError> {
+    private static func mapDownloadResponse(_ afResponse: DownloadResponse<Data, AFError>) -> NetworkDelivery {
+        let result: Result<HTTPResponse, IrisError>
         switch afResponse.result {
         case .success(let data):
-            return mapNetworkResult(
+            result = mapNetworkResult(
                 data: data,
                 request: afResponse.request,
                 response: afResponse.response,
                 error: nil
             )
         case .failure(let error):
-            return mapNetworkResult(
+            result = mapNetworkResult(
                 data: afResponse.resumeData ?? Data(),
                 request: afResponse.request,
                 response: afResponse.response,
                 error: error
             )
         }
+        return NetworkDelivery(result: result, metrics: afResponse.metrics)
     }
     
     private static func performDataResponseRequest<Model: Decodable & Sendable>(
@@ -462,7 +488,7 @@ public struct Iris {
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
         buildRequest: () -> AFDataRequest
-    ) async -> Result<HTTPResponse, IrisError> {
+    ) async -> NetworkDelivery {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let validationCodes = request.validationType.statusCodes
@@ -489,7 +515,7 @@ public struct Iris {
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
         buildRequest: () -> AFDownloadRequest
-    ) async -> Result<HTTPResponse, IrisError> {
+    ) async -> NetworkDelivery {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let validationCodes = request.validationType.statusCodes
@@ -544,7 +570,7 @@ public struct Iris {
         plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
-    ) async -> Result<HTTPResponse, IrisError> {
+    ) async -> NetworkDelivery {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let accumulation = StreamAccumulation()
@@ -569,13 +595,17 @@ public struct Iris {
                         broadcaster.yieldChunk(data, handlerOnQueue: true)
                     case .complete(let completion):
                         let data = accumulation.snapshot()
+                        let metrics = streamRequest.metrics
                         if let error = completion.error {
                             accumulation.complete(
-                                mapNetworkResult(
-                                    data: data,
-                                    request: completion.request,
-                                    response: completion.response,
-                                    error: error
+                                NetworkDelivery(
+                                    result: mapNetworkResult(
+                                        data: data,
+                                        request: completion.request,
+                                        response: completion.response,
+                                        error: error
+                                    ),
+                                    metrics: metrics
                                 ),
                                 continuation: continuation
                             )
@@ -586,11 +616,16 @@ public struct Iris {
                                 request: completion.request,
                                 response: completion.response
                             )
+                            let result: Result<HTTPResponse, IrisError>
                             if !validationCodes.isEmpty && !validationCodes.contains(httpResponse.statusCode) {
-                                accumulation.complete(.failure(.statusCode(httpResponse)), continuation: continuation)
+                                result = .failure(.statusCode(httpResponse))
                             } else {
-                                accumulation.complete(.success(httpResponse), continuation: continuation)
+                                result = .success(httpResponse)
                             }
+                            accumulation.complete(
+                                NetworkDelivery(result: result, metrics: metrics),
+                                continuation: continuation
+                            )
                         }
                     }
                 }
@@ -672,7 +707,7 @@ public struct Iris {
         plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
-    ) async -> Result<HTTPResponse, IrisError> {
+    ) async -> NetworkDelivery {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
             session.requestQueue.sync {
                 let afRequest = session.request(urlRequest, interceptor: interceptor)
@@ -699,7 +734,7 @@ public struct Iris {
         plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
-    ) async -> Result<HTTPResponse, IrisError> {
+    ) async -> NetworkDelivery {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
             session.requestQueue.sync {
                 let afRequest = session.upload(fileURL, with: urlRequest, interceptor: interceptor)
@@ -726,7 +761,7 @@ public struct Iris {
         plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
-    ) async -> Result<HTTPResponse, IrisError> {
+    ) async -> NetworkDelivery {
         await performDataResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
             session.requestQueue.sync {
                 let afFormData = RequestMultipartFormData(fileManager: formData.fileManager, boundary: formData.boundary)
@@ -755,7 +790,7 @@ public struct Iris {
         plugins: [any PluginType],
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken
-    ) async -> Result<HTTPResponse, IrisError> {
+    ) async -> NetworkDelivery {
         await performDownloadResponseRequest(request: request, broadcaster: broadcaster, cancellationToken: cancellationToken) {
             session.requestQueue.sync {
                 let afRequest = session.download(urlRequest, interceptor: interceptor, to: destination)
@@ -780,7 +815,8 @@ public struct Iris {
         _ request: Call<Model>,
         behavior: StubBehavior,
         broadcaster: EventBroadcaster,
-        configuration: IrisConfiguration
+        configuration: IrisConfiguration,
+        startedAt: CFAbsoluteTime
     ) async throws -> Response<Model> {
         // Calculate delay
         let delay: TimeInterval
@@ -832,7 +868,12 @@ public struct Iris {
         }
         
         broadcaster.deliverStub(data: stubData)
-        return try finish(result, request: request, configuration: configuration)
+        return try finish(
+            NetworkDelivery(result: result),
+            request: request,
+            configuration: configuration,
+            startedAt: startedAt
+        )
     }
 }
 

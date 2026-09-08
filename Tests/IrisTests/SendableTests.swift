@@ -26,6 +26,12 @@ final class SendableTests: XCTestCase {
         assertSendable(CallTask.requestPlain)
         assertSendable(HeaderModifyingPlugin(headerKey: "X-Test", headerValue: "1"))
         assertSendable(EmptyPlugin())
+        assertSendable(
+            CompletionInfo(
+                result: .success(Response(model: Empty(), httpResponse: HTTPResponse(statusCode: 200, data: Data()))),
+                duration: 0
+            )
+        )
     }
 
     func testCallCanCrossIsolationDomain() async throws {

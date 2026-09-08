@@ -177,6 +177,23 @@ final class LiveRequestTests: XCTestCase {
         await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
         task.cancel()
     }
+
+    func testOnCompleteReceivesSessionMetrics() async throws {
+        stubBody(Data("{}".utf8))
+        let infoBox = SendableBox<CompletionInfo<Empty>?>(nil)
+
+        _ = try await Call<Empty>()
+            .path("/complete-metrics")
+            .onComplete { infoBox.value = $0 }
+            .send()
+
+        let info = try XCTUnwrap(infoBox.value)
+        XCTAssertNotNil(info.metrics)
+        XCTAssertGreaterThan(info.duration, 0)
+        XCTAssertGreaterThanOrEqual(info.serializationDuration, 0)
+        XCTAssertNotNil(info.model)
+        XCTAssertNil(info.error)
+    }
     
     private func stubBody(
         _ data: Data,

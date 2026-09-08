@@ -169,7 +169,7 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     ///
     /// Does not start the request. Use `onComplete(_:)` for cache / database / shared
     /// error UI. Call-site results belong on `send(on:completion:)` / `fetch(on:completion:)`.
-    public var onCompleteHandler: (@Sendable (AFDataResponse<ResponseType>) -> Void)?
+    public var onCompleteHandler: (@Sendable (CompletionInfo<ResponseType>) -> Void)?
     
     // MARK: - Initialization
     
@@ -612,27 +612,27 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     /// for `send(on:completion:)`.
     ///
     /// If both are chained, both fire: `onComplete` first on the current thread with
-    /// `AFDataResponse`, then the completion wrapper on its queue with
+    /// `CompletionInfo`, then the completion wrapper on its queue with
     /// `Result<Response, IrisError>`.
     ///
     /// Example:
     /// ```swift
     /// Call<Meet>()
     ///     .path("/meets/\(id)")
-    ///     .onComplete { resp in
-    ///         switch resp.result {
-    ///         case .success(let model):
-    ///             AppDatabase.shared.saveMeet(model)
-    ///         case .failure:
-    ///             resp.errorMessage()?.showMessage()
+    ///     .onComplete { info in
+    ///         switch info.result {
+    ///         case .success(let response):
+    ///             AppDatabase.shared.saveMeet(response.model)
+    ///         case .failure(let error):
+    ///             error.errorDescription?.showMessage()
     ///         }
     ///     }
     ///     .fetch()
     /// ```
     ///
-    /// - Parameter handler: A closure called with the decoded Alamofire response.
+    /// - Parameter handler: Called with Iris completion info after decode.
     /// - Returns: A new call with the completion handler.
-    public func onComplete(_ handler: @escaping @Sendable (AFDataResponse<ResponseType>) -> Void) -> Call<ResponseType> {
+    public func onComplete(_ handler: @escaping @Sendable (CompletionInfo<ResponseType>) -> Void) -> Call<ResponseType> {
         var request = self
         request.onCompleteHandler = handler
         return request

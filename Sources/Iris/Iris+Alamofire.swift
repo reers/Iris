@@ -156,65 +156,6 @@ private struct AnyEncodable: Encodable, Sendable {
     }
 }
 
-// MARK: - CancellableToken
-
-/// A token that can be used to cancel requests.
-///
-/// `CancellableToken` wraps either a custom cancel action or an Alamofire request,
-/// providing a unified interface for cancellation.
-public final class CancellableToken: Cancellable, CustomDebugStringConvertible, @unchecked Sendable {
-    
-    /// The action to perform when cancelled.
-    let cancelAction: @Sendable () -> Void
-    
-    /// The associated Alamofire request, if any.
-    let afRequest: AFRequest?
-
-    /// Whether this token has been cancelled.
-    public fileprivate(set) var isCancelled = false
-
-    /// Lock for thread-safe cancellation.
-    fileprivate var lock: DispatchSemaphore = DispatchSemaphore(value: 1)
-
-    /// Cancels the associated request.
-    ///
-    /// This method is thread-safe and will only execute the cancel action once,
-    /// even if called multiple times.
-    public func cancel() {
-        _ = lock.wait(timeout: DispatchTime.distantFuture)
-        defer { lock.signal() }
-        guard !isCancelled else { return }
-        isCancelled = true
-        cancelAction()
-    }
-
-    /// Creates a token with a custom cancel action.
-    ///
-    /// - Parameter action: The action to perform when cancelled.
-    public init(action: @escaping @Sendable () -> Void) {
-        self.cancelAction = action
-        self.afRequest = nil
-    }
-
-    /// Creates a token wrapping an Alamofire request.
-    ///
-    /// - Parameter request: The Alamofire request to wrap.
-    init(request: AFRequest) {
-        self.afRequest = request
-        self.cancelAction = {
-            request.cancel()
-        }
-    }
-
-    /// A textual representation suitable for debugging.
-    public var debugDescription: String {
-        guard let request = self.afRequest else {
-            return "Empty Request"
-        }
-        return request.cURLDescription()
-    }
-}
-
 // MARK: - IrisCallInterceptor
 
 /// Lock-protected `willSend` hook attached after the Alamofire request exists.

@@ -633,10 +633,8 @@ final class StubTests: XCTestCase {
         _ = try await Call<GitHubUser>()
             .path("/users/oncomplete")
             .stub(GitHubUser(login: "oncomplete", id: 123))
-            .onComplete { response in
-                if case .success(let model) = response.result {
-                    receivedModel.value = model
-                }
+            .onComplete { info in
+                receivedModel.value = info.model
                 expectation.fulfill()
             }
             .send()
@@ -655,8 +653,8 @@ final class StubTests: XCTestCase {
         _ = try await Call<GitHubUser>()
             .path("/users/success")
             .stub(GitHubUser(login: "success", id: 1))
-            .onComplete { response in
-                if case .success = response.result {
+            .onComplete { info in
+                if case .success = info.result {
                     wasSuccess.value = true
                 }
                 expectation.fulfill()
@@ -679,10 +677,12 @@ final class StubTests: XCTestCase {
             _ = try await Call<GitHubUser>()
                 .path("/users/invalid")
                 .stub(invalidData)
-                .onComplete { response in
-                    if case .failure = response.result {
+                .onComplete { info in
+                    if case .failure(.objectMapping) = info.result {
                         wasFailure.value = true
                     }
+                    XCTAssertGreaterThanOrEqual(info.serializationDuration, 0)
+                    XCTAssertNil(info.metrics)
                     expectation.fulfill()
                 }
                 .send()
@@ -703,8 +703,8 @@ final class StubTests: XCTestCase {
         let user1 = try await Call<GitHubUser>()
             .path("/users/user1")
             .stub(GitHubUser(login: "user1", id: 1))
-            .onComplete { response in
-                if case .success(let model) = response.result {
+            .onComplete { info in
+                if let model = info.model {
                     savedUsers.append(model)
                 }
             }
@@ -713,8 +713,8 @@ final class StubTests: XCTestCase {
         let user2 = try await Call<GitHubUser>()
             .path("/users/user2")
             .stub(GitHubUser(login: "user2", id: 2))
-            .onComplete { response in
-                if case .success(let model) = response.result {
+            .onComplete { info in
+                if let model = info.model {
                     savedUsers.append(model)
                 }
             }
@@ -736,8 +736,8 @@ final class StubTests: XCTestCase {
         _ = try await Call<GitHubUser>()
             .path("/users/metadata")
             .stub(stubData)
-            .onComplete { response in
-                receivedData.value = response.data
+            .onComplete { info in
+                receivedData.value = info.data
                 expectation.fulfill()
             }
             .send()
@@ -761,10 +761,8 @@ final class StubTests: XCTestCase {
         _ = try await Call<[GitHubUser]>()
             .path("/users")
             .stub(stubData)
-            .onComplete { response in
-                if case .success(let models) = response.result {
-                    receivedUsers.value = models
-                }
+            .onComplete { info in
+                receivedUsers.value = info.model ?? []
                 expectation.fulfill()
             }
             .send()
@@ -786,8 +784,11 @@ final class StubTests: XCTestCase {
             .path("/users/delayed")
             .stub(GitHubUser(login: "delayed", id: 1))
             .stub(behavior: .delayed(delay))
-            .onComplete { _ in
+            .onComplete { info in
                 completedAt.value = Date()
+                XCTAssertNil(info.metrics)
+                XCTAssertGreaterThanOrEqual(info.duration, delay * 0.9)
+                XCTAssertGreaterThanOrEqual(info.serializationDuration, 0)
                 expectation.fulfill()
             }
             .send()

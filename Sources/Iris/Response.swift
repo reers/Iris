@@ -389,6 +389,75 @@ public struct Response<Model>: CustomDebugStringConvertible {
 
 extension Response: Sendable where Model: Sendable {}
 
+// MARK: - CompletionInfo
+
+/// Iris-owned completion payload for `Call.onComplete`.
+///
+/// This is the sidecar equivalent of `send()`'s terminal `Response` / `IrisError`,
+/// plus timing collected on this request. It does not wrap Alamofire types.
+///
+/// `metrics` is the `URLSessionTaskMetrics` snapshot produced when the task
+/// finishes. It is `nil` for stubs and for failures that never reached the
+/// session. `@unchecked Sendable` is valid because that snapshot is immutable
+/// after URLSession publishes it.
+public struct CompletionInfo<Model: Sendable>: @unchecked Sendable {
+    
+    /// Decoded success or the Iris error that `send()` would throw.
+    public let result: Result<Response<Model>, IrisError>
+    
+    /// Wall-clock time from request start through plugin processing and decode.
+    ///
+    /// Includes stub delay. Does not include time spent in the `onComplete` handler.
+    public let duration: TimeInterval
+    
+    /// Time spent decoding the body into `Model`. `0` when decoding never ran.
+    public let serializationDuration: TimeInterval
+    
+    /// Session task metrics from the underlying `URLSession` task, if any.
+    public let metrics: URLSessionTaskMetrics?
+    
+    public init(
+        result: Result<Response<Model>, IrisError>,
+        duration: TimeInterval,
+        serializationDuration: TimeInterval = 0,
+        metrics: URLSessionTaskMetrics? = nil
+    ) {
+        self.result = result
+        self.duration = duration
+        self.serializationDuration = serializationDuration
+        self.metrics = metrics
+    }
+    
+    /// The typed response when `result` is success.
+    public var response: Response<Model>? {
+        if case .success(let response) = result { return response }
+        return nil
+    }
+    
+    /// The decoded model when `result` is success.
+    public var model: Model? { response?.model }
+    
+    /// HTTP metadata from a successful response or from an error that still
+    /// carried a body.
+    public var httpResponse: HTTPResponse? {
+        switch result {
+        case .success(let response):
+            return response.httpResponse
+        case .failure(let error):
+            return error.response
+        }
+    }
+    
+    /// Raw body bytes, when a response was received.
+    public var data: Data? { httpResponse?.data }
+    
+    /// The error when `result` is failure.
+    public var error: IrisError? {
+        if case .failure(let error) = result { return error }
+        return nil
+    }
+}
+
 // MARK: - Private Helpers
 
 /// A wrapper for decoding scalar values at key paths.
