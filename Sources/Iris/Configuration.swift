@@ -312,3 +312,38 @@ public enum StubBehavior: Sendable {
     /// - Parameter seconds: The delay in seconds before returning the response.
     case delayed(TimeInterval)
 }
+
+extension IrisConfiguration {
+    var requestJSONDecoder: JSONDecoder {
+        jsonDecoder.irisCopy()
+    }
+
+    var requestJSONEncoder: JSONEncoder {
+        jsonEncoder.irisCopy()
+    }
+}
+
+extension JSONDecoder {
+    func irisCopy() -> JSONDecoder {
+        let copy = JSONDecoder()
+        copy.dateDecodingStrategy = dateDecodingStrategy
+        copy.dataDecodingStrategy = dataDecodingStrategy
+        copy.nonConformingFloatDecodingStrategy = nonConformingFloatDecodingStrategy
+        copy.keyDecodingStrategy = keyDecodingStrategy
+        copy.userInfo = userInfo
+        return copy
+    }
+}
+
+extension JSONEncoder {
+    func irisCopy() -> JSONEncoder {
+        let copy = JSONEncoder()
+        copy.outputFormatting = outputFormatting
+        copy.dateEncodingStrategy = dateEncodingStrategy
+        copy.dataEncodingStrategy = dataEncodingStrategy
+        copy.nonConformingFloatEncodingStrategy = nonConformingFloatEncodingStrategy
+        copy.keyEncodingStrategy = keyEncodingStrategy
+        copy.userInfo = userInfo
+        return copy
+    }
+}

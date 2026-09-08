@@ -251,6 +251,26 @@ final class LiveRequestTests: XCTestCase {
         task.cancel()
         await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
     }
+
+    func testBreakingOutOfTerminalStreamCancelsUnderlyingRequest() async {
+        let didCancelUnderlyingRequest = expectation(description: "Stopping terminal stream iteration should cancel the request")
+        StubURLProtocol.onStopLoading = {
+            didCancelUnderlyingRequest.fulfill()
+        }
+        stubBody(Data(repeating: 0x61, count: 1024 * 1024), chunkSize: 1024, chunkInterval: 0.01)
+
+        do {
+            for try await _ in Call<Empty>()
+                .path("/v1/break-stream")
+                .streamBytes() {
+                break
+            }
+        } catch {
+            XCTFail("Breaking iteration should not surface an error, got \(error)")
+        }
+
+        await fulfillment(of: [didCancelUnderlyingRequest], timeout: 1)
+    }
     
     func testCancellingSendScopeCancelsUnderlyingRequest() async {
         let didStartUnderlyingRequest = expectation(description: "Underlying request should start")

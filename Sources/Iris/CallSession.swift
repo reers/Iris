@@ -18,7 +18,7 @@ import os.lock
 /// Do not store this value. It exists so the live request does not leak out of
 /// the `send` closure as a second execution type.
 ///
-public struct CallSession<ResponseType: Decodable & Sendable>: Sendable {
+public struct CallSession<ResponseType: Decodable>: @unchecked Sendable {
     
     private let valueTask: Task<Response<ResponseType>, Error>
     private let broadcaster: EventBroadcaster
@@ -88,9 +88,9 @@ final class EventBroadcaster: @unchecked Sendable {
     private var didFinish = false
     private var didYieldChunk = false
     
-    private var uploadSubscribers: [AsyncStream<Progress>.Continuation] = []
-    private var downloadSubscribers: [AsyncStream<Progress>.Continuation] = []
-    private var chunkSubscribers: [AsyncStream<Data>.Continuation] = []
+    private var uploadSubscribers: [UUID: AsyncStream<Progress>.Continuation] = [:]
+    private var downloadSubscribers: [UUID: AsyncStream<Progress>.Continuation] = [:]
+    private var chunkSubscribers: [UUID: AsyncStream<Data>.Continuation] = [:]
     
     private let uploadHandler: (@Sendable (Progress) -> Void)?
     private let uploadQueue: DispatchQueue
@@ -100,7 +100,7 @@ final class EventBroadcaster: @unchecked Sendable {
     private let chunkQueue: DispatchQueue
     private let isStream: Bool
     
-    init<Model: Decodable & Sendable>(from request: Call<Model>) {
+    init<Model: Decodable>(from request: Call<Model>) {
         lock = .allocate(capacity: 1)
         lock.initialize(to: os_unfair_lock_s())
         uploadHandler = request.uploadProgressHandler
@@ -119,12 +119,16 @@ final class EventBroadcaster: @unchecked Sendable {
     
     var uploadProgress: AsyncStream<Progress> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            let id = UUID()
+            continuation.onTermination = { [weak self] _ in
+                self?.removeUploadSubscriber(id)
+            }
             os_unfair_lock_lock(self.lock)
             if self.didFinish {
                 os_unfair_lock_unlock(self.lock)
                 continuation.finish()
             } else {
-                self.uploadSubscribers.append(continuation)
+                self.uploadSubscribers[id] = continuation
                 os_unfair_lock_unlock(self.lock)
             }
         }
@@ -132,12 +136,16 @@ final class EventBroadcaster: @unchecked Sendable {
     
     var downloadProgress: AsyncStream<Progress> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            let id = UUID()
+            continuation.onTermination = { [weak self] _ in
+                self?.removeDownloadSubscriber(id)
+            }
             os_unfair_lock_lock(self.lock)
             if self.didFinish {
                 os_unfair_lock_unlock(self.lock)
                 continuation.finish()
             } else {
-                self.downloadSubscribers.append(continuation)
+                self.downloadSubscribers[id] = continuation
                 os_unfair_lock_unlock(self.lock)
             }
         }
@@ -154,12 +162,16 @@ final class EventBroadcaster: @unchecked Sendable {
 
     var chunks: AsyncStream<Data> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            let id = UUID()
+            continuation.onTermination = { [weak self] _ in
+                self?.removeChunkSubscriber(id)
+            }
             os_unfair_lock_lock(self.lock)
             if self.didFinish {
                 os_unfair_lock_unlock(self.lock)
                 continuation.finish()
             } else {
-                self.chunkSubscribers.append(continuation)
+                self.chunkSubscribers[id] = continuation
                 os_unfair_lock_unlock(self.lock)
             }
         }
@@ -170,7 +182,7 @@ final class EventBroadcaster: @unchecked Sendable {
     func yieldUpload(_ progress: Progress, handlerOnQueue: Bool) {
         let snapshot = Self.snapshot(progress)
         os_unfair_lock_lock(lock)
-        let subscribers = didFinish ? nil : uploadSubscribers
+        let subscribers = didFinish ? nil : Array(uploadSubscribers.values)
         os_unfair_lock_unlock(lock)
         notify(uploadHandler, queue: uploadQueue, handlerOnQueue: handlerOnQueue, value: snapshot)
         subscribers?.forEach { $0.yield(snapshot) }
@@ -179,7 +191,7 @@ final class EventBroadcaster: @unchecked Sendable {
     func yieldDownload(_ progress: Progress, handlerOnQueue: Bool) {
         let snapshot = Self.snapshot(progress)
         os_unfair_lock_lock(lock)
-        let subscribers = didFinish ? nil : downloadSubscribers
+        let subscribers = didFinish ? nil : Array(downloadSubscribers.values)
         os_unfair_lock_unlock(lock)
         notify(downloadHandler, queue: downloadQueue, handlerOnQueue: handlerOnQueue, value: snapshot)
         subscribers?.forEach { $0.yield(snapshot) }
@@ -189,7 +201,7 @@ final class EventBroadcaster: @unchecked Sendable {
         guard isStream else { return }
         os_unfair_lock_lock(lock)
         didYieldChunk = true
-        let subscribers = didFinish ? nil : chunkSubscribers
+        let subscribers = didFinish ? nil : Array(chunkSubscribers.values)
         os_unfair_lock_unlock(lock)
         notify(chunkHandler, queue: chunkQueue, handlerOnQueue: handlerOnQueue, value: data)
         subscribers?.forEach { $0.yield(data) }
@@ -209,9 +221,9 @@ final class EventBroadcaster: @unchecked Sendable {
         os_unfair_lock_lock(lock)
         let alreadyFinished = didFinish
         didFinish = true
-        let upload = uploadSubscribers
-        let download = downloadSubscribers
-        let chunks = chunkSubscribers
+        let upload = Array(uploadSubscribers.values)
+        let download = Array(downloadSubscribers.values)
+        let chunks = Array(chunkSubscribers.values)
         uploadSubscribers.removeAll()
         downloadSubscribers.removeAll()
         chunkSubscribers.removeAll()
@@ -220,6 +232,24 @@ final class EventBroadcaster: @unchecked Sendable {
         upload.forEach { $0.finish() }
         download.forEach { $0.finish() }
         chunks.forEach { $0.finish() }
+    }
+
+    private func removeUploadSubscriber(_ id: UUID) {
+        os_unfair_lock_lock(lock)
+        uploadSubscribers[id] = nil
+        os_unfair_lock_unlock(lock)
+    }
+
+    private func removeDownloadSubscriber(_ id: UUID) {
+        os_unfair_lock_lock(lock)
+        downloadSubscribers[id] = nil
+        os_unfair_lock_unlock(lock)
+    }
+
+    private func removeChunkSubscriber(_ id: UUID) {
+        os_unfair_lock_lock(lock)
+        chunkSubscribers[id] = nil
+        os_unfair_lock_unlock(lock)
     }
     
     /// Snapshots a `Progress` so later mutations of Alamofire's shared instance

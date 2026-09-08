@@ -161,7 +161,7 @@ public extension Endpoint {
         case let .requestJSONEncodable(encodable):
             return try request.encoded(encodable: encodable, encoder: encoder)
         case let .requestCustomJSONEncodable(encodable, encoder: encoder):
-            return try request.encoded(encodable: encodable, encoder: encoder)
+            return try request.encoded(encodable: encodable, encoder: encoder.irisCopy())
         case let .requestParameters(parameters, parameterEncoding):
             return try request.encoded(parameters: parameters, parameterEncoding: parameterEncoding)
         case let .uploadCompositeMultipartFormData(_, urlParameters):

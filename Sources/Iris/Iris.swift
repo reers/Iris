@@ -137,11 +137,17 @@ private final class TerminalStreamCompletion: @unchecked Sendable {
     }
 }
 
+private struct TerminalStreamBufferOverflow: Error {}
+
 /// Lazily starts a terminal stream on first iteration and bridges callback chunks
 /// into an `AsyncThrowingStream(unfolding:)` sequence.
 private final class TerminalStreamEmitter<Element: Sendable>: @unchecked Sendable {
+    private static var maximumBufferedBytes: Int { 16 * 1024 * 1024 }
+
     private let lock: os_unfair_lock_t
+    private let cost: @Sendable (Element) -> Int
     private var buffered: [Element] = []
+    private var bufferedBytes = 0
     private var waiter: CheckedContinuation<Element?, any Error>?
     private var didStart = false
     private var didFinish = false
@@ -149,9 +155,10 @@ private final class TerminalStreamEmitter<Element: Sendable>: @unchecked Sendabl
     private var onStart: (@Sendable () -> Void)?
     private var onCancel: (@Sendable () -> Void)?
 
-    init() {
+    init(cost: @escaping @Sendable (Element) -> Int) {
         lock = .allocate(capacity: 1)
         lock.initialize(to: os_unfair_lock_s())
+        self.cost = cost
     }
 
     deinit {
@@ -167,8 +174,19 @@ private final class TerminalStreamEmitter<Element: Sendable>: @unchecked Sendabl
 
     func setCancel(_ onCancel: @escaping @Sendable () -> Void) {
         os_unfair_lock_lock(lock)
+        if didFinish {
+            os_unfair_lock_unlock(lock)
+            onCancel()
+            return
+        }
         self.onCancel = onCancel
         os_unfair_lock_unlock(lock)
+    }
+
+    var shouldStartRequest: Bool {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+        return !didFinish
     }
 
     func next() async throws -> Element? {
@@ -194,7 +212,19 @@ private final class TerminalStreamEmitter<Element: Sendable>: @unchecked Sendabl
             os_unfair_lock_unlock(lock)
             waiter.resume(returning: value)
         } else {
+            let valueCost = cost(value)
+            if bufferedBytes + valueCost > Self.maximumBufferedBytes {
+                didFinish = true
+                terminalError = TerminalStreamBufferOverflow()
+                let onCancel = self.onCancel
+                self.onStart = nil
+                self.onCancel = nil
+                os_unfair_lock_unlock(lock)
+                onCancel?()
+                return
+            }
             buffered.append(value)
+            bufferedBytes += valueCost
             os_unfair_lock_unlock(lock)
         }
     }
@@ -229,6 +259,7 @@ private final class TerminalStreamEmitter<Element: Sendable>: @unchecked Sendabl
             return
         }
         didFinish = true
+        terminalError = CancellationError()
         let waiter = self.waiter
         let onCancel = self.onCancel
         self.waiter = nil
@@ -252,6 +283,7 @@ private final class TerminalStreamEmitter<Element: Sendable>: @unchecked Sendabl
 
         if !buffered.isEmpty {
             let value = buffered.removeFirst()
+            bufferedBytes -= cost(value)
             os_unfair_lock_unlock(lock)
             continuation.resume(returning: value)
             return start
@@ -277,6 +309,79 @@ private final class TerminalStreamEmitter<Element: Sendable>: @unchecked Sendabl
 
         func cancel() {
             emitter?.cancel()
+        }
+    }
+}
+
+/// A lazy terminal stream returned by `Call.streamBytes()` and `Call.streamStrings()`.
+///
+/// The request starts on first iteration. Dropping the iterator early, such as
+/// by `break` from a `for await` loop, cancels the underlying request so long
+/// lived streams do not keep downloading into Iris's buffer.
+public struct IrisStream<Element: Sendable>: AsyncSequence, Sendable {
+    public typealias AsyncIterator = Iterator
+
+    private let emitter: TerminalStreamEmitter<Element>
+
+    fileprivate init(emitter: TerminalStreamEmitter<Element>) {
+        self.emitter = emitter
+    }
+
+    public func makeAsyncIterator() -> Iterator {
+        Iterator(emitter: emitter)
+    }
+
+    public struct Iterator: AsyncIteratorProtocol {
+        private let state: IteratorState
+
+        fileprivate init(emitter: TerminalStreamEmitter<Element>) {
+            state = IteratorState(emitter: emitter)
+        }
+
+        public mutating func next() async throws -> Element? {
+            try await state.next()
+        }
+    }
+
+    private final class IteratorState: @unchecked Sendable {
+        private let emitter: TerminalStreamEmitter<Element>
+        private let lock: os_unfair_lock_t
+        private var isFinished = false
+
+        init(emitter: TerminalStreamEmitter<Element>) {
+            self.emitter = emitter
+            lock = .allocate(capacity: 1)
+            lock.initialize(to: os_unfair_lock_s())
+        }
+
+        deinit {
+            os_unfair_lock_lock(lock)
+            let shouldCancel = !isFinished
+            os_unfair_lock_unlock(lock)
+            if shouldCancel {
+                emitter.cancel()
+            }
+            lock.deinitialize(count: 1)
+            lock.deallocate()
+        }
+
+        func next() async throws -> Element? {
+            do {
+                let value = try await emitter.next()
+                if value == nil {
+                    markFinished()
+                }
+                return value
+            } catch {
+                markFinished()
+                throw error
+            }
+        }
+
+        private func markFinished() {
+            os_unfair_lock_lock(lock)
+            isFinished = true
+            os_unfair_lock_unlock(lock)
         }
     }
 }
@@ -353,11 +458,11 @@ public struct Iris {
     /// - Parameter request: The `Call` object containing all configuration for the network call.
     /// - Returns: A `Response<Model>` containing the decoded model and raw response data.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
-    public static func send<Model: Decodable & Sendable>(_ request: Call<Model>) async throws -> Response<Model> {
+    public static func send<Model: Decodable>(_ request: Call<Model>) async throws -> Response<Model> {
         try await request.resolvedClient.send(request)
     }
 
-    static func send<Model: Decodable & Sendable>(_ request: Call<Model>, using client: IrisClient) async throws -> Response<Model> {
+    static func send<Model: Decodable>(_ request: Call<Model>, using client: IrisClient) async throws -> Response<Model> {
         let broadcaster = EventBroadcaster(from: request)
         let cancellationToken = AlamofireRequestCancellationToken()
         return try await withTaskCancellationHandler {
@@ -377,24 +482,25 @@ public struct Iris {
     /// still fire on the same probe. After `body` returns, this awaits the
     /// network task and always returns `Response<Model>` — `body` only consumes
     /// sidecars.
-    static func send<Model: Decodable & Sendable>(
+    static func send<Model: Decodable>(
         _ request: Call<Model>,
         _ body: @Sendable (CallSession<Model>) async throws -> Void
     ) async throws -> Response<Model> {
         try await request.resolvedClient.send(request, body)
     }
 
-    static func send<Model: Decodable & Sendable>(
+    static func send<Model: Decodable>(
         _ request: Call<Model>,
         _ body: @Sendable (CallSession<Model>) async throws -> Void,
         using client: IrisClient
     ) async throws -> Response<Model> {
         let broadcaster = EventBroadcaster(from: request)
         let cancellationToken = AlamofireRequestCancellationToken()
+        let sendableRequest = UncheckedSendable(value: request)
         
         let valueTask = Task<Response<Model>, Error> {
             defer { broadcaster.finish() }
-            return try await execute(request, broadcaster: broadcaster, cancellationToken: cancellationToken, client: client)
+            return try await execute(sendableRequest.value, broadcaster: broadcaster, cancellationToken: cancellationToken, client: client)
         }
         
         let session = CallSession(valueTask: valueTask, broadcaster: broadcaster)
@@ -426,7 +532,7 @@ public struct Iris {
     /// - Parameter request: The `Call` object containing all configuration for the network call.
     /// - Returns: The decoded model of type `Model`.
     /// - Throws: `IrisError` if the request fails or response cannot be decoded.
-    public static func fetch<Model: Decodable & Sendable>(_ request: Call<Model>) async throws -> Model {
+    public static func fetch<Model: Decodable>(_ request: Call<Model>) async throws -> Model {
         try await request.resolvedClient.fetch(request)
     }
 
@@ -434,14 +540,14 @@ public struct Iris {
     ///
     /// This is a lazy terminal API, similar to Alamofire's `responseStream`:
     /// the request starts when the returned sequence is first iterated.
-    public static func streamBytes<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<Data, Error> {
+    public static func streamBytes<Model: Decodable>(_ request: Call<Model>) -> IrisStream<Data> {
         request.resolvedClient.streamBytes(request)
     }
 
-    static func streamBytes<Model: Decodable & Sendable>(
+    static func streamBytes<Model: Decodable>(
         _ request: Call<Model>,
         using client: IrisClient
-    ) -> AsyncThrowingStream<Data, Error> {
+    ) -> IrisStream<Data> {
         makeByteTerminalStream(request, using: client)
     }
 
@@ -449,32 +555,34 @@ public struct Iris {
     ///
     /// This is a lazy terminal API, similar to Alamofire's `responseStreamString`:
     /// the request starts when the returned sequence is first iterated.
-    public static func streamStrings<Model: Decodable & Sendable>(_ request: Call<Model>) -> AsyncThrowingStream<String, Error> {
+    public static func streamStrings<Model: Decodable>(_ request: Call<Model>) -> IrisStream<String> {
         request.resolvedClient.streamStrings(request)
     }
 
-    static func streamStrings<Model: Decodable & Sendable>(
+    static func streamStrings<Model: Decodable>(
         _ request: Call<Model>,
         using client: IrisClient
-    ) -> AsyncThrowingStream<String, Error> {
+    ) -> IrisStream<String> {
         makeStringTerminalStream(request, using: client)
     }
     
     // MARK: - Private Methods
 
-    private static func makeByteTerminalStream<Model: Decodable & Sendable>(
+    private static func makeByteTerminalStream<Model: Decodable>(
         _ request: Call<Model>,
         using client: IrisClient
-    ) -> AsyncThrowingStream<Data, Error> {
-        let emitter = TerminalStreamEmitter<Data>()
+    ) -> IrisStream<Data> {
+        let emitter = TerminalStreamEmitter<Data>(cost: { $0.count })
+        let sendableRequest = UncheckedSendable(value: request)
         emitter.setStart { [weak emitter] in
             guard let emitter else { return }
+            guard emitter.shouldStartRequest else { return }
             let cancellation = TerminalStreamCancellation()
             let cancellationToken = AlamofireRequestCancellationToken()
             emitter.setCancel { cancellation.cancel() }
             let streamTask = Task {
                 await runByteTerminalStream(
-                    request,
+                    sendableRequest.value,
                     using: client,
                     cancellationToken: cancellationToken,
                     yield: { emitter.yield($0) },
@@ -483,24 +591,24 @@ public struct Iris {
             }
             cancellation.set(task: streamTask, token: cancellationToken)
         }
-        return AsyncThrowingStream(unfolding: {
-            try await emitter.next()
-        })
+        return IrisStream(emitter: emitter)
     }
 
-    private static func makeStringTerminalStream<Model: Decodable & Sendable>(
+    private static func makeStringTerminalStream<Model: Decodable>(
         _ request: Call<Model>,
         using client: IrisClient
-    ) -> AsyncThrowingStream<String, Error> {
-        let emitter = TerminalStreamEmitter<String>()
+    ) -> IrisStream<String> {
+        let emitter = TerminalStreamEmitter<String>(cost: { $0.utf8.count })
+        let sendableRequest = UncheckedSendable(value: request)
         emitter.setStart { [weak emitter] in
             guard let emitter else { return }
+            guard emitter.shouldStartRequest else { return }
             let cancellation = TerminalStreamCancellation()
             let cancellationToken = AlamofireRequestCancellationToken()
             emitter.setCancel { cancellation.cancel() }
             let streamTask = Task {
                 await runStringTerminalStream(
-                    request,
+                    sendableRequest.value,
                     using: client,
                     cancellationToken: cancellationToken,
                     yield: { emitter.yield($0) },
@@ -509,12 +617,10 @@ public struct Iris {
             }
             cancellation.set(task: streamTask, token: cancellationToken)
         }
-        return AsyncThrowingStream(unfolding: {
-            try await emitter.next()
-        })
+        return IrisStream(emitter: emitter)
     }
 
-    private static func runByteTerminalStream<Model: Decodable & Sendable>(
+    private static func runByteTerminalStream<Model: Decodable>(
         _ request: Call<Model>,
         using client: IrisClient,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -547,7 +653,7 @@ public struct Iris {
         }
     }
 
-    private static func runStringTerminalStream<Model: Decodable & Sendable>(
+    private static func runStringTerminalStream<Model: Decodable>(
         _ request: Call<Model>,
         using client: IrisClient,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -583,11 +689,21 @@ public struct Iris {
             finish(error)
         }
     }
+
+    private static func sleepForStubDelay(_ interval: TimeInterval) async throws {
+        guard interval.isFinite, interval > 0 else {
+            return
+        }
+
+        let maximumSeconds = Double(UInt64.max) / 1_000_000_000
+        let clampedInterval = min(interval, maximumSeconds)
+        try await _Concurrency.Task.sleep(nanoseconds: UInt64(clampedInterval * 1_000_000_000))
+    }
     
     /// Stub or live request. Shared by `send()` and `send { session in }` so the
     /// session path can start this work in a sibling task without changing
     /// plugin / sidecar / decode order.
-    private static func execute<Model: Decodable & Sendable>(
+    private static func execute<Model: Decodable>(
         _ request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -617,7 +733,7 @@ public struct Iris {
     /// - Parameter request: The `Call` object to execute.
     /// - Returns: A `Response<Model>` containing the decoded model.
     /// - Throws: `IrisError` if any step in the request lifecycle fails.
-    private static func performRequest<Model: Decodable & Sendable>(
+    private static func performRequest<Model: Decodable>(
         _ request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -632,9 +748,10 @@ public struct Iris {
         // 4. Create interceptor (bridges Plugin system to Alamofire)
         // Capture plugins array to satisfy Sendable requirement
         let plugins = configuration.plugins
+        let sendableResolvedRequest = UncheckedSendable(value: resolvedRequest)
         let interceptor = IrisCallInterceptor(
             prepare: { @Sendable urlRequest in
-                try await prepare(urlRequest, target: resolvedRequest, plugins: plugins)
+                try await prepare(urlRequest, target: sendableResolvedRequest.value, plugins: plugins)
             },
             retryPolicy: resolvedRequest.retryPolicy,
             streamHasDeliveredChunks: { broadcaster.hasYieldedChunks }
@@ -687,13 +804,13 @@ public struct Iris {
     ///   - customDecoder: An optional custom JSON decoder. If nil, uses the global configuration decoder.
     /// - Returns: The decoded model.
     /// - Throws: `IrisError.objectMapping` if decoding fails.
-    private static func decodeModel<Model: Decodable & Sendable>(
+    private static func decodeModel<Model: Decodable>(
         _ type: Model.Type,
         from rawResponse: HTTPResponse,
         using customDecoder: JSONDecoder?,
         configuration: IrisConfiguration
     ) throws -> Model {
-        let decoder = customDecoder ?? configuration.jsonDecoder
+        let decoder = (customDecoder ?? configuration.jsonDecoder).irisCopy()
         
         if Model.self == Empty.self {
             return Empty() as! Model
@@ -706,7 +823,7 @@ public struct Iris {
     ///
     /// Both success and failure results pass through `didReceive` and `process`
     /// so plugins can log errors, hide activity indicators, or recover failures.
-    private static func finish<Model: Decodable & Sendable>(
+    private static func finish<Model: Decodable>(
         _ delivery: NetworkDelivery,
         request: Call<Model>,
         configuration: IrisConfiguration,
@@ -766,7 +883,7 @@ public struct Iris {
     }
 
     /// Applies plugin request preparation in registration order.
-    private static func prepare<Model: Decodable & Sendable>(
+    private static func prepare<Model: Decodable>(
         _ urlRequest: URLRequest,
         target request: Call<Model>,
         plugins: [any PluginType]
@@ -778,7 +895,7 @@ public struct Iris {
         return prepared
     }
 
-    private static func performLiveByteTerminalStream<Model: Decodable & Sendable>(
+    private static func performLiveByteTerminalStream<Model: Decodable>(
         _ request: Call<Model>,
         configuration: IrisConfiguration,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -790,9 +907,10 @@ public struct Iris {
         let urlRequest = try makeURLRequest(from: resolvedRequest, configuration: configuration)
         let plugins = configuration.plugins
         let streamState = TerminalStreamCompletion()
+        let sendableResolvedRequest = UncheckedSendable(value: resolvedRequest)
         let interceptor = IrisCallInterceptor(
             prepare: { @Sendable urlRequest in
-                try await prepare(urlRequest, target: resolvedRequest, plugins: plugins)
+                try await prepare(urlRequest, target: sendableResolvedRequest.value, plugins: plugins)
             },
             retryPolicy: resolvedRequest.retryPolicy,
             streamHasDeliveredChunks: { streamState.hasYieldedChunks }
@@ -848,7 +966,7 @@ public struct Iris {
         }
     }
 
-    private static func performLiveStringTerminalStream<Model: Decodable & Sendable>(
+    private static func performLiveStringTerminalStream<Model: Decodable>(
         _ request: Call<Model>,
         configuration: IrisConfiguration,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -860,9 +978,10 @@ public struct Iris {
         let urlRequest = try makeURLRequest(from: resolvedRequest, configuration: configuration)
         let plugins = configuration.plugins
         let streamState = TerminalStreamCompletion()
+        let sendableResolvedRequest = UncheckedSendable(value: resolvedRequest)
         let interceptor = IrisCallInterceptor(
             prepare: { @Sendable urlRequest in
-                try await prepare(urlRequest, target: resolvedRequest, plugins: plugins)
+                try await prepare(urlRequest, target: sendableResolvedRequest.value, plugins: plugins)
             },
             retryPolicy: resolvedRequest.retryPolicy,
             streamHasDeliveredChunks: { streamState.hasYieldedChunks }
@@ -918,7 +1037,7 @@ public struct Iris {
         }
     }
 
-    private static func performStubTerminalStream<Model: Decodable & Sendable>(
+    private static func performStubTerminalStream<Model: Decodable>(
         _ request: Call<Model>,
         behavior: StubBehavior,
         configuration: IrisConfiguration,
@@ -928,7 +1047,7 @@ public struct Iris {
         case .immediate:
             break
         case .delayed(let interval):
-            try await _Concurrency.Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            try await sleepForStubDelay(interval)
         }
 
         let stubRequest: URLRequest?
@@ -997,7 +1116,7 @@ public struct Iris {
         return RetryPolicy.restoreUserAcceptedStatus(delivery, validation: validation)
     }
 
-    private static func completeTerminalStream<Model: Decodable & Sendable>(
+    private static func completeTerminalStream<Model: Decodable>(
         _ delivery: NetworkDelivery,
         request: Call<Model>,
         plugins: [any PluginType],
@@ -1013,7 +1132,7 @@ public struct Iris {
         }
     }
 
-    private static func processTerminalResult<Model: Decodable & Sendable>(
+    private static func processTerminalResult<Model: Decodable>(
         _ result: Result<HTTPResponse, IrisError>,
         request: Call<Model>,
         plugins: [any PluginType]
@@ -1026,7 +1145,7 @@ public struct Iris {
         return processedResult
     }
 
-    private static func notifyComplete<Model: Decodable & Sendable>(
+    private static func notifyComplete<Model: Decodable>(
         _ request: Call<Model>,
         result: Result<Response<Model>, IrisError>,
         startedAt: CFAbsoluteTime,
@@ -1076,7 +1195,7 @@ public struct Iris {
     /// The closures feed `EventBroadcaster`, which multicasts to recipe handlers and
     /// `CallSession` streams. Always attached so `send { session in }` can observe
     /// progress even when the recipe has no `onUploadProgress` / `onDownloadProgress`.
-    private static func attachSidecars<Model: Decodable & Sendable>(
+    private static func attachSidecars<Model: Decodable>(
         _ afRequest: AFRequest,
         from request: Call<Model>,
         broadcaster: EventBroadcaster
@@ -1131,7 +1250,7 @@ public struct Iris {
         return NetworkDelivery(result: result, metrics: afResponse.metrics)
     }
     
-    private static func performDataResponseRequest<Model: Decodable & Sendable>(
+    private static func performDataResponseRequest<Model: Decodable>(
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -1161,7 +1280,7 @@ public struct Iris {
         }
     }
     
-    private static func performDownloadResponseRequest<Model: Decodable & Sendable>(
+    private static func performDownloadResponseRequest<Model: Decodable>(
         request: Call<Model>,
         broadcaster: EventBroadcaster,
         cancellationToken: AlamofireRequestCancellationToken,
@@ -1191,7 +1310,7 @@ public struct Iris {
         }
     }
     
-    private static func configureWillSend<Model: Decodable & Sendable>(
+    private static func configureWillSend<Model: Decodable>(
         _ afRequest: AFRequest,
         interceptor: IrisCallInterceptor,
         request: Call<Model>,
@@ -1216,7 +1335,7 @@ public struct Iris {
     /// `onComplete` still run once in `finish()`, same as a buffered data request.
     /// `automaticallyCancelOnStreamError` is false so transport errors still map through
     /// `mapNetworkResult` instead of cancelling the Alamofire request first.
-    private static func performStream<Model: Decodable & Sendable>(
+    private static func performStream<Model: Decodable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
         session: Session,
@@ -1318,7 +1437,7 @@ public struct Iris {
     ///
     /// - Parameter request: The request to convert.
     /// - Returns: An `Endpoint` representing the request.
-    private static func createEndpoint<Model: Decodable & Sendable>(from request: Call<Model>, configuration: IrisConfiguration) throws -> Endpoint {
+    private static func createEndpoint<Model: Decodable>(from request: Call<Model>, configuration: IrisConfiguration) throws -> Endpoint {
         let url = try resolveURL(baseURL: request.configuredBaseURL(over: configuration), path: request.path).absoluteString
         
         return Endpoint(
@@ -1330,12 +1449,12 @@ public struct Iris {
         )
     }
     
-    private static func makeURLRequest<Model: Decodable & Sendable>(
+    private static func makeURLRequest<Model: Decodable>(
         from request: Call<Model>,
         configuration: IrisConfiguration
     ) throws -> URLRequest {
         let endpoint = try createEndpoint(from: request, configuration: configuration)
-        var urlRequest = try endpoint.urlRequest(encoder: configuration.jsonEncoder)
+        var urlRequest = try endpoint.urlRequest(encoder: configuration.requestJSONEncoder)
         urlRequest.timeoutInterval = request.timeout(over: configuration)
 
         var headers = configuration.defaultHeaders
@@ -1359,7 +1478,7 @@ public struct Iris {
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
     /// - Returns: A result containing the response data or an `IrisError`.
-    private static func performDataRequest<Model: Decodable & Sendable>(
+    private static func performDataRequest<Model: Decodable>(
         _ urlRequest: URLRequest,
         interceptor: IrisCallInterceptor,
         session: Session,
@@ -1385,7 +1504,7 @@ public struct Iris {
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
     /// - Returns: A result containing the response data or an `IrisError`.
-    private static func performUploadFile<Model: Decodable & Sendable>(
+    private static func performUploadFile<Model: Decodable>(
         _ urlRequest: URLRequest,
         fileURL: URL,
         interceptor: IrisCallInterceptor,
@@ -1412,7 +1531,7 @@ public struct Iris {
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
     /// - Returns: A result containing the response data or an `IrisError`.
-    private static func performUploadMultipart<Model: Decodable & Sendable>(
+    private static func performUploadMultipart<Model: Decodable>(
         _ urlRequest: URLRequest,
         formData: MultipartFormData,
         interceptor: IrisCallInterceptor,
@@ -1441,7 +1560,7 @@ public struct Iris {
     ///   - interceptor: The request interceptor for plugin integration.
     ///   - request: The original request for validation configuration.
     /// - Returns: A result containing the response data or an `IrisError`.
-    private static func performDownload<Model: Decodable & Sendable>(
+    private static func performDownload<Model: Decodable>(
         _ urlRequest: URLRequest,
         destination: @escaping DownloadDestination,
         interceptor: IrisCallInterceptor,
@@ -1471,7 +1590,7 @@ public struct Iris {
     ///   - behavior: The stub behavior determining timing of the response.
     /// - Returns: A `Response<Model>` containing the decoded stub data.
     /// - Throws: `IrisError` if decoding the stub data fails.
-    private static func performStub<Model: Decodable & Sendable>(
+    private static func performStub<Model: Decodable>(
         _ request: Call<Model>,
         behavior: StubBehavior,
         broadcaster: EventBroadcaster,
@@ -1489,7 +1608,7 @@ public struct Iris {
         
         // Apply delay
         if delay > 0 {
-            try await _Concurrency.Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            try await sleepForStubDelay(delay)
         }
         
         let stubRequest: URLRequest?

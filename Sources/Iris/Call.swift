@@ -9,6 +9,10 @@
 import Alamofire
 import Foundation
 
+public enum IrisQueues {
+    public static let stream = DispatchQueue(label: "com.iris.stream", qos: .utility)
+}
+
 private struct CallbackResultDelivery<Success, Failure: Error>: @unchecked Sendable {
     let result: Result<Success, Failure>
 }
@@ -48,7 +52,7 @@ private struct CallbackResultDelivery<Success, Failure: Error>: @unchecked Senda
 /// // Execute requests
 /// let user = try await Call<User>.getUser(id: 123).fetch()
 /// ```
-public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
+public struct Call<ResponseType: Decodable>: TargetType, @unchecked Sendable {
     
     // MARK: - TargetType Properties
     
@@ -84,7 +88,11 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     
     /// The sample response returned in stub mode.
     var sampleResponseClosure: Endpoint.SampleResponseClosure {
-        _sampleResponseClosure ?? { .networkResponse(200, sampleData) }
+        if let _sampleResponseClosure {
+            return _sampleResponseClosure
+        }
+        let sendableSampleData = UncheckedSendable(value: sampleData)
+        return { .networkResponse(200, sendableSampleData.value) }
     }
     
     // MARK: - Iris Extended Properties
@@ -175,8 +183,8 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     /// Stream chunk sidecar. Invoked on `chunkQueue` for each body fragment when `isStream` is true.
     var chunkHandler: (@Sendable (Data) -> Void)?
     
-    /// Queue for `chunkHandler`. Defaults to the main queue.
-    var chunkQueue: DispatchQueue = .main
+    /// Queue for `chunkHandler`. Defaults to Iris's background stream queue.
+    var chunkQueue: DispatchQueue = IrisQueues.stream
     
     /// Side-channel handler invoked from `finish()` after decode, before `send()` returns.
     ///
@@ -625,11 +633,11 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     /// concatenated body.
     ///
     /// - Parameters:
-    ///   - queue: The queue for chunk callbacks. Defaults to the main queue.
+    ///   - queue: The queue for chunk callbacks. Defaults to a background stream queue.
     ///   - handler: Called with each `Data` fragment.
     /// - Returns: A new call with the chunk handler.
     public func onChunk(
-        on queue: DispatchQueue = .main,
+        on queue: DispatchQueue = IrisQueues.stream,
         _ handler: @escaping @Sendable (Data) -> Void
     ) -> Call<ResponseType> {
         var request = self
@@ -845,7 +853,7 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     /// decoded `Response`.
     ///
     /// - Returns: An async sequence of raw `Data` chunks.
-    public func streamBytes() -> AsyncThrowingStream<Data, Error> {
+    public func streamBytes() -> IrisStream<Data> {
         Iris.streamBytes(self)
     }
 
@@ -856,7 +864,7 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
     /// sequence is first iterated. It does not parse lines or Server-Sent Events.
     ///
     /// - Returns: An async sequence of `String` chunks.
-    public func streamStrings() -> AsyncThrowingStream<String, Error> {
+    public func streamStrings() -> IrisStream<String> {
         Iris.streamStrings(self)
     }
     
@@ -882,17 +890,18 @@ public struct Call<ResponseType: Decodable & Sendable>: TargetType, Sendable {
         on queue: DispatchQueue = .main,
         completion: @escaping @Sendable (Result<Response<ResponseType>, IrisError>) -> Void
     ) -> Task<Void, Never> {
-        Task {
+        let sendableRequest = UncheckedSendable(value: self)
+        return Task {
             let result: Result<Response<ResponseType>, IrisError>
             do {
-                result = .success(try await send())
+                result = .success(try await sendableRequest.value.send())
             } catch let error as IrisError {
                 result = .failure(error)
             } catch {
                 result = .failure(.underlying(error, nil))
             }
-            let delivery = CallbackResultDelivery(result: result)
-            queue.async { completion(delivery.result) }
+            let delivery = UncheckedSendable(value: CallbackResultDelivery(result: result))
+            queue.async { completion(delivery.value.result) }
         }
     }
     

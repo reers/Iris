@@ -59,6 +59,19 @@ final class RetryTests: XCTestCase {
         XCTAssertEqual(policy.delay(beforeRetry: 3), 2.0)
     }
 
+    func testRetryDelayIsClampedToFiniteValue() {
+        let policy = RetryPolicy(count: 100, interval: .infinity, backoff: .exponential)
+
+        XCTAssertTrue(policy.delay(beforeRetry: 100).isFinite)
+        XCTAssertLessThanOrEqual(policy.delay(beforeRetry: 100), RetryPolicy.maximumDelay)
+    }
+
+    func testRetryDelayTreatsInvalidBackoffAsImmediateRetry() {
+        let policy = RetryPolicy(count: 3, interval: 0.5, backoff: .exponential(base: .nan, scale: 1))
+
+        XCTAssertEqual(policy.delay(beforeRetry: 2), 0)
+    }
+
     func testCallRetrySetsPolicy() {
         let request = Call<Empty>()
             .retry(count: 2, interval: 0.1, backoff: .none)

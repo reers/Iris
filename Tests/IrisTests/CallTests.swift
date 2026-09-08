@@ -1042,6 +1042,7 @@ final class CallTests: XCTestCase {
         XCTAssertNotNil(request.uploadProgressHandler)
         XCTAssertNotNil(request.downloadProgressHandler)
         XCTAssertNotNil(request.chunkHandler)
+        XCTAssertTrue(request.chunkQueue === IrisQueues.stream)
         XCTAssertTrue(request.isStream)
     }
     

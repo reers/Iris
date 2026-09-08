@@ -387,7 +387,7 @@ public struct Response<Model>: CustomDebugStringConvertible {
     }
 }
 
-extension Response: Sendable where Model: Sendable {}
+extension Response: @unchecked Sendable {}
 
 // MARK: - CompletionInfo
 
@@ -400,7 +400,7 @@ extension Response: Sendable where Model: Sendable {}
 /// finishes. It is `nil` for stubs and for failures that never reached the
 /// session. `@unchecked Sendable` is valid because that snapshot is immutable
 /// after URLSession publishes it.
-public struct CompletionInfo<Model: Sendable>: @unchecked Sendable {
+public struct CompletionInfo<Model>: @unchecked Sendable {
     
     /// Decoded success or the Iris error that `send()` would throw.
     public let result: Result<Response<Model>, IrisError>
